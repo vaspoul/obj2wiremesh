@@ -1,0 +1,7 @@
+.vs/
+BUILD/
+*.txt
+*.sln
+*.exe
+*.obj
+*.xyz
