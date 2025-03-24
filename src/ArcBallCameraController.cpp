@@ -147,10 +147,6 @@ bool ArcBallCameraController::ProcessInput(const InputCollector& inputState)
 
 		m_orthoZoom *= 1.0f + inputState.GetMouseRelative().x * m_mouseSensitivityDragZoom;
 
-		char buffer[256];
-		sprintf_s(buffer, 256, "%f\n", m_targetDistance);
-		OutputDebugStringA(buffer);
-
 		m_dirty = true;
 	}
 	else if (inputState.IsMouseButtonUp(Mouse::Middle) && m_draggingRight)
