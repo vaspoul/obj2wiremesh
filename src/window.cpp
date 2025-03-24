@@ -3,6 +3,8 @@
 #include "ArcBallCameraController.h"
 #include "InputCollector.h"
 #include "AppInterface.h"
+#include "imgui/imgui.h"
+#include "imgui/imgui_impl_win32.h"
 
 HINSTANCE						g_hInst;
 HWND							g_hWND;
@@ -11,6 +13,8 @@ uint32_t						g_windowHeight;
 bool							g_quit = false;
 InputCollector					g_inputCollector;
 ArcBallCameraController			g_cameraController;
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 void Resize()
 {
@@ -29,6 +33,8 @@ void Resize()
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 {
+	ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam);
+
 	switch (message) 
 	{
 		case WM_CREATE:
@@ -245,6 +251,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 	wc.hInstance		= g_hInst;
 	wc.lpszClassName	= L"obj2mesh";
 	wc.hbrBackground	= (HBRUSH)GetStockObject(DKGRAY_BRUSH);
+	wc.hCursor			= LoadCursor(NULL, IDC_ARROW);
 	RegisterClass(&wc);
     
 	RECT windowRect = {0, 0, 1280, 720};
@@ -280,9 +287,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 		RegisterRawInputDevices(devices, ARRAYSIZE(devices), sizeof(RAWINPUTDEVICE));
 	}
 
+	// imgui
+	{
+		// Setup Dear ImGui context
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGuiIO& io = ImGui::GetIO(); (void)io;
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+		// Setup Dear ImGui style
+		ImGui::StyleColorsDark();
+
+		ImGui_ImplWin32_Init(g_hWND);
+
+	}
+
 	InitD3D(g_hWND);
 
-	::ShowWindow(g_hWND, nCmdShow);
+	::ShowWindow(g_hWND, SW_MAXIMIZE);//nCmdShow);
 	::UpdateWindow(g_hWND);
 
 	std::vector<std::string> args;
@@ -320,7 +343,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 			DispatchMessage(&msg);
 		}
 
-		g_cameraController.ProcessInput(g_inputCollector);
+        ImGui_ImplWin32_NewFrame();
+
+		if (!ImGui::GetIO().WantCaptureKeyboard)
+		{
+			g_cameraController.ProcessInput(g_inputCollector);
+		}
 
 		RenderD3D(g_windowWidth, g_windowHeight);
 	}
