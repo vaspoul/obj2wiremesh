@@ -69,7 +69,7 @@ project("obj2mesh")
 
 	filter {}
 
-	files({ "**.h", "**.cpp", "**.resx" })
+	files({ "**.h", "**.cpp", "**.natvis" })
 	
 	links( {"comctl32.lib"} )
 

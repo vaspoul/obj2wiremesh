@@ -17,3 +17,4 @@ void DrawPoints(const float3* positions, uint32_t pointCount, const matrix44& wo
 // Functions the application can call
 void Quit();
 void SetWindowTitle(const std::string& title);
+uint32_t GetHoverVertexIndex();

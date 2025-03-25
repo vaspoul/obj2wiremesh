@@ -8,6 +8,8 @@ std::vector<float3>				g_points;
 std::vector<uint32_t>			g_triangleIndices;
 float3							g_modelCenter;
 float3							g_modelSize;
+float							g_minDistance;
+int								g_maxTriangleIndex = -1;
 
 float TriangleArea(const float3& v0, const float3& v1, const float3& v2)
 {
@@ -15,7 +17,7 @@ float TriangleArea(const float3& v0, const float3& v1, const float3& v2)
 	return 0.5f * std::sqrt(crossProd.x * crossProd.x + crossProd.y * crossProd.y + crossProd.z * crossProd.z);
 }
 
-float3 RandomPointInTriangle(const float3& v0, const float3& v1, const float3& v2)
+float3 RandomPointInTriangle(const float3& v0, const float3& v1, const float3& v2, uint32_t i, uint32_t iMax)
 {
 	static std::random_device rd;
 	static std::mt19937 gen(rd());
@@ -23,6 +25,15 @@ float3 RandomPointInTriangle(const float3& v0, const float3& v1, const float3& v
 
 	float u = dist(gen);
 	float v = dist(gen);
+
+	uint32_t iMaxX = std::max(1u, (uint32_t)sqrtf((float)iMax));
+	
+	u = float(i % iMaxX) / float(iMaxX);
+	v = float(i / iMaxX) / float(iMaxX);
+
+	u = saturate(u);
+	v = saturate(v);
+
 	if (u + v > 1.0f)
 	{
 		u = 1.0f - u;
@@ -122,12 +133,12 @@ bool GeneratePointCloud(const std::string& filename, int pointsPerTriangle, std:
 
 			for (int j = 0; j < numSamples; ++j)
 			{
-				pointCloud.push_back(RandomPointInTriangle(v0, v1, v2));
+				pointCloud.push_back(RandomPointInTriangle(v0, v1, v2, j, numSamples));
 			}
 		}
 	}
 
-	minDistance = sqrtf(avgTriangleArea) * 1.0f;
+	g_minDistance = sqrtf(avgTriangleArea * 2.0f) * 1.0f;
 
 	std::vector<float3> reducedPointCloud;
 
@@ -137,7 +148,7 @@ bool GeneratePointCloud(const std::string& filename, int pointsPerTriangle, std:
 
 		for (const float3& q : reducedPointCloud) 
 		{
-			if (distance(p, q) < minDistance) 
+			if (distance(p, q) < g_minDistance) 
 			{
 				keep = false;
 				break;
@@ -153,7 +164,17 @@ bool GeneratePointCloud(const std::string& filename, int pointsPerTriangle, std:
 	return true;
 }
 
-void RollingBallTriangulation(const std::vector<float3>& points, std::vector<uint32_t>& triangleIndices, float ballRadius)
+std::vector<uint32_t>			g_edgeIndices;
+std::vector<uint32_t>			g_edgeOppositeIndex;
+std::unordered_set<uint64_t>	g_edgeHashes;
+std::unordered_set<uint64_t>	g_fullEdges;
+
+uint64_t EdgeHash(uint32_t i0, uint32_t i1)
+{
+	return ((uint64_t)std::min(i0,i1) << 32) | ((uint64_t)std::max(i0,i1));
+}
+
+void RollingBallTriangulationStart(const std::vector<float3>& points, std::vector<uint32_t>& triangleIndices, float ballRadius)
 {
 	const uint32_t numPoints = (uint32_t)points.size();
 
@@ -162,8 +183,7 @@ void RollingBallTriangulation(const std::vector<float3>& points, std::vector<uin
 		uint32_t index0 = 0;
 		uint32_t index1 = 1;
 		uint32_t index2 = 2;
-		float bestDistance1 = 1e6;
-		float bestDistance2 = 1e6;
+		float bestDistance = 1e6;
 
 		for (uint32_t i = 0; i != numPoints; ++i) 
 		{
@@ -172,124 +192,226 @@ void RollingBallTriangulation(const std::vector<float3>& points, std::vector<uin
 
 			float currentDist = distance(points[index0], points[i]);
 			
-			if (currentDist < bestDistance1)
+			if (currentDist < bestDistance)
 			{
-				index2 = index1;
-				bestDistance2 = bestDistance1;
-
 				index1 = i;
-				bestDistance1 = currentDist;
-			}
-			else if (currentDist < bestDistance2)
-			{
-				index2 = i;
-				bestDistance2 = currentDist;
+				bestDistance = currentDist;
 			}
 		}
 
+		float3 midPoint = avg(points[index0], points[index1]);
+		float3 edgeDir01 = normalize(points[index1] - points[index0]);
+		bestDistance = 1e6;
+
+		for (uint32_t i = 0; i != numPoints; ++i) 
+		{
+			if (i == index0 || i == index1)
+				continue;
+
+			float currentDist = distance(midPoint, points[i]);
+			float3 currentDir = normalize(points[i] - points[index0]);
+			
+			if ( currentDist < bestDistance && fabs(dot(edgeDir01, currentDir)) < 0.999f )
+			{
+				index2 = i;
+				bestDistance = currentDist;
+			}
+		}
+
+		std::swap(index0, index1);
 		triangleIndices.push_back(index0);
 		triangleIndices.push_back(index1);
 		triangleIndices.push_back(index2);
+
+		assert(TriangleArea(points[index0], points[index1], points[index2])>0);
 	}
 
-	std::vector<uint32_t> edgeIndices;
-	std::vector<uint32_t> edgeOppositeIndex;
-	std::unordered_set<uint64_t> edgeHashes;
+	g_edgeIndices.push_back(triangleIndices[0]);
+	g_edgeIndices.push_back(triangleIndices[1]);
+	g_edgeOppositeIndex.push_back(triangleIndices[2]);
+	g_edgeHashes.insert(EdgeHash(triangleIndices[0], triangleIndices[1]));
 
-	auto EdgeHash = [](uint32_t i0, uint32_t i1) -> uint64_t
+	g_edgeIndices.push_back(triangleIndices[1]);
+	g_edgeIndices.push_back(triangleIndices[2]);
+	g_edgeOppositeIndex.push_back(triangleIndices[0]);
+	g_edgeHashes.insert(EdgeHash(triangleIndices[1], triangleIndices[2]));
+
+	g_edgeIndices.push_back(triangleIndices[2]);
+	g_edgeIndices.push_back(triangleIndices[0]);
+	g_edgeOppositeIndex.push_back(triangleIndices[1]);
+	g_edgeHashes.insert(EdgeHash(triangleIndices[2], triangleIndices[0]));
+}
+
+void RollingBallTriangulation(const std::vector<float3>& points, std::vector<uint32_t>& triangleIndices, float ballRadius)
+{
+	triangleIndices.clear();
+	g_edgeIndices.clear();
+	g_edgeOppositeIndex.clear();
+	g_edgeHashes.clear();
+	g_fullEdges.clear();
+
+	RollingBallTriangulationStart(g_points, triangleIndices, ballRadius);
+
+	auto Range = [](float x, float xMin, float xMax) -> float
 	{
-		return ((uint64_t)std::min(i0,i1) << 32) | ((uint64_t)std::max(i0,i1));
+		return saturate( (x - xMin) / (xMax - xMin) );
 	};
 
-	edgeIndices.push_back(triangleIndices[0]);
-	edgeIndices.push_back(triangleIndices[1]);
-	edgeOppositeIndex.push_back(triangleIndices[2]);
-	edgeHashes.insert(EdgeHash(triangleIndices[0], triangleIndices[1]));
-
-	edgeIndices.push_back(triangleIndices[1]);
-	edgeIndices.push_back(triangleIndices[2]);
-	edgeOppositeIndex.push_back(triangleIndices[0]);
-	edgeHashes.insert(EdgeHash(triangleIndices[1], triangleIndices[2]));
-
-	edgeIndices.push_back(triangleIndices[2]);
-	edgeIndices.push_back(triangleIndices[0]);
-	edgeOppositeIndex.push_back(triangleIndices[1]);
-	edgeHashes.insert(EdgeHash(triangleIndices[2], triangleIndices[0]));
-
-	for (uint32_t i=0; i!=edgeIndices.size(); i += 2)
+	for (uint32_t i=0; i!=g_edgeIndices.size(); i += 2)
 	{
-		float bestDistance = 1e6;
-		uint32_t bestIndex = UINT32_MAX;
+		const uint32_t edgeIndex0 = g_edgeIndices[i+0];
+		const uint32_t edgeIndex1 = g_edgeIndices[i+1];
+		const uint32_t oppositeIndex = g_edgeOppositeIndex[i/2];
 
-		float3 midPoint = avg( points[edgeIndices[i+0]], points[edgeIndices[i+1]] );
+		if (g_fullEdges.count(EdgeHash(edgeIndex0, edgeIndex1)))
+			continue;
+
+		if (triangleIndices.size()/3 == 13)
+			printf("");
+
+		uint32_t bestIndex = UINT32_MAX;
+		float bestScore = FLT_MIN;
+
+		const float3 edgeDir = normalize(points[edgeIndex1] - points[edgeIndex0]);
+		const float3 midPoint = avg(points[edgeIndex0], points[edgeIndex1]);
+		const float3 triNormal0 = TriangleNormal( points[edgeIndex0], points[edgeIndex1], points[oppositeIndex] );
+		//const float3 triTangent = normalize( points[oppositeIndex] - midPoint );
+		const float3 triTangent = normalize( cross( triNormal0, edgeDir ) );
 
 		for (uint32_t j=0; j!=points.size(); ++j)
 		{
-			if ( j == edgeIndices[i+0] || j == edgeIndices[i+1] || j == edgeOppositeIndex[i/2] )
+			if ( j == edgeIndex0 || j == edgeIndex1 || j == oppositeIndex )
 				continue;
 
-			float currentDist = distance(midPoint, points[j]);
+			if (g_fullEdges.count(EdgeHash(edgeIndex0, j)) || g_fullEdges.count(EdgeHash(edgeIndex1, j)))
+				continue;
 
-			if (currentDist < bestDistance)
+			float3 candidateDir = normalize(points[j] - points[edgeIndex0]);
+
+			// Exclude colinear points
+			if (fabs(dot(edgeDir, candidateDir)) >= 0.999f)
+				continue;
+
+			//float candidateDist = DistanceToEdge(points[edgeIndex0], points[edgeIndex1], points[j]);
+			float candidateDist = distance(midPoint, points[j]);
+			//float candidateDist = std::min( distance(points[edgeIndex0], points[j]), distance(points[edgeIndex1], points[j]) );
+			float3 candidateNormal = TriangleNormal( points[edgeIndex1], points[edgeIndex0], points[j] );
+			//float3 candidateTangent = normalize( points[j] - midPoint );
+			float3 candidateTangent = normalize( cross( candidateNormal, -edgeDir ) );
+
+			float candidatePlaneDist = dot( (points[j] - points[edgeIndex0]), triTangent );
+
+			float candidateNormalDot = dot(candidateNormal, triNormal0);
+			float candidateTangentDot = dot(candidateTangent, triTangent);
+
+			float candidateAngle1 = fabs( dot( normalize(points[j] - points[edgeIndex0]), normalize(points[edgeIndex1] - points[edgeIndex0]) ) );
+			float candidateAngle2 = fabs( dot( normalize(points[j] - points[edgeIndex1]), normalize(points[edgeIndex1] - points[edgeIndex0]) ) );
+			float candidateMinAngle = std::min(candidateAngle1, candidateAngle2);
+
+			//float hingeAngle = degrees( atan2f(candidateNormalDot, -candidateTangentDot) );
+			float dy = dot(points[j] - midPoint, triNormal0);
+			float dx = dot(points[j] - midPoint, triTangent);
+
+			dy /= fabs(dy);
+			dx /= fabs(dy);
+
+			float hingeAngle = degrees( atan2f(dy, dx) );
+
+			if (hingeAngle<0) hingeAngle += 360;
+
+			float score = 0;
+
+			//score += 6.0f * Range(candidateDist / ballRadius, 1, 0);
+			//score += 4.0f * Range( fabs(candidateNormalDot), 0.2f, 1.0f );
+			//score += 5.0f * Range( candidateTangentDot, 0.2f, -1.0f );
+			score += 5.0f * Range( hingeAngle, 360, 0 );
+			//score += 4.0f * Range( candidateMinAngle, 1.0f, 0.5f );
+
+			score *= candidateDist <= ballRadius ? 1 : 0;
+			score *= candidatePlaneDist <= 0 ? 1 : 0;
+			//score *= fabs(candidateNormalDot) > 0.2f ? 1 : 0;
+
+			if (score >= bestScore)
 			{
-				bestDistance = currentDist;
+				bestScore = score;
 				bestIndex = j;
 			}
 		}
 
+		uint32_t futureEdgeIndex = UINT32_MAX;
+
+		//if (bestIndex != UINT32_MAX)
+		//{
+		//	for (uint32_t k=edgeIndex+2; k<g_edgeIndices.size(); k += 2)
+		//	{
+		//		if ( bestIndex == g_edgeIndices[k+0] || bestIndex == g_edgeIndices[k+1] || bestIndex == g_edgeOppositeIndex[k/2] )
+		//			continue;
+
+		//		float currentDist = DistanceToEdge(points[g_edgeIndices[k+0]], points[g_edgeIndices[k+1]], points[bestIndex]);
+
+		//		if (currentDist < bestDistance)
+		//		{
+		//			bestIndex = UINT32_MAX;
+		//			futureEdgeIndex = k;
+		//			break;
+		//		}
+		//	}
+		//}
+
 		if (bestIndex != UINT32_MAX)
 		{
-			for (uint32_t k=i+2; k<edgeIndices.size(); k += 2)
+			if (triangleIndices.size() == 17*3)
+				printf("");
+
+			float3 triNormal1 = TriangleNormal( points[edgeIndex1], points[edgeIndex0], points[bestIndex] );
+
+			bool sameWinding = dot(triNormal0, triNormal1)>0;
+
+			uint32_t newTriIndex0 = sameWinding ? edgeIndex1 : edgeIndex0;
+			uint32_t newTriIndex1 = sameWinding ? edgeIndex0 : edgeIndex1;
+
+			triangleIndices.push_back(newTriIndex0);
+			triangleIndices.push_back(newTriIndex1);
+			triangleIndices.push_back(bestIndex);
+
+			assert(TriangleArea(points[newTriIndex0], points[newTriIndex1], points[bestIndex])>0);
+			assert(g_edgeHashes.count(EdgeHash(newTriIndex0, newTriIndex1)) == 1);
+
+			g_fullEdges.insert(EdgeHash(newTriIndex0, newTriIndex1));
+
+			if (g_edgeHashes.count(EdgeHash(newTriIndex1, bestIndex)) == 0)
 			{
-				if ( bestIndex == edgeIndices[k+0] || bestIndex == edgeIndices[k+1] || bestIndex == edgeOppositeIndex[k/2] )
-					continue;
-
-				float3 midPointK = avg( points[edgeIndices[k+0]], points[edgeIndices[k+1]] );
-			
-				float currentDist = distance(midPointK, points[bestIndex]);
-
-				if (currentDist < bestDistance)
-				{
-					bestIndex = UINT32_MAX;
-					break;
-				}
-			}
-		}
-
-		if (bestIndex != UINT32_MAX)
-		{
-			float3 triNormal0 = TriangleNormal( points[edgeIndices[i+0]], points[edgeIndices[i+1]], points[edgeOppositeIndex[i/2]] );
-			float3 triNormal1 = TriangleNormal( points[edgeIndices[i+1]], points[edgeIndices[i+0]], points[bestIndex] );
-
-			if (dot(triNormal0, triNormal1)>0)
-			{
-				triangleIndices.push_back(edgeIndices[i+1]);
-				triangleIndices.push_back(edgeIndices[i+0]);
-				triangleIndices.push_back(bestIndex);
+				//g_edgeIndices.insert(g_edgeIndices.begin() + i + 2, bestIndex);
+				//g_edgeIndices.insert(g_edgeIndices.begin() + i + 2, newTriIndex1);
+				//g_edgeOppositeIndex.insert(g_edgeOppositeIndex.begin() + i/2 + 1, newTriIndex0);
+				g_edgeIndices.push_back(newTriIndex1);
+				g_edgeIndices.push_back(bestIndex);
+				g_edgeOppositeIndex.push_back(newTriIndex0);
+				g_edgeHashes.insert(EdgeHash(newTriIndex1, bestIndex));
 			}
 			else
 			{
-				triangleIndices.push_back(edgeIndices[i+0]);
-				triangleIndices.push_back(edgeIndices[i+1]);
-				triangleIndices.push_back(bestIndex);
+				g_fullEdges.insert(EdgeHash(newTriIndex1, bestIndex));
 			}
 
-			if (edgeHashes.count(EdgeHash(edgeIndices[i+0], bestIndex)) == 0)
+			if (g_edgeHashes.count(EdgeHash(bestIndex, newTriIndex0)) == 0)
 			{
-				edgeIndices.push_back(edgeIndices[i+0]);
-				edgeIndices.push_back(bestIndex);
-				edgeOppositeIndex.push_back(edgeIndices[i+1]);
-				edgeHashes.insert(EdgeHash(edgeIndices[i+0], bestIndex));
+				//g_edgeIndices.insert(g_edgeIndices.begin() + i + 2, newTriIndex0);
+				//g_edgeIndices.insert(g_edgeIndices.begin() + i + 2, bestIndex);
+				//g_edgeOppositeIndex.insert(g_edgeOppositeIndex.begin() + i/2 + 1, newTriIndex1);
+				g_edgeIndices.push_back(bestIndex);
+				g_edgeIndices.push_back(newTriIndex0);
+				g_edgeOppositeIndex.push_back(newTriIndex1);
+				g_edgeHashes.insert(EdgeHash(bestIndex, newTriIndex0));
 			}
-
-			if (edgeHashes.count(EdgeHash(edgeIndices[i+1], bestIndex)) == 0)
+			else
 			{
-				edgeIndices.push_back(edgeIndices[i+1]);
-				edgeIndices.push_back(bestIndex);
-				edgeOppositeIndex.push_back(edgeIndices[i+0]);
-				edgeHashes.insert(EdgeHash(edgeIndices[i+1], bestIndex));
+				g_fullEdges.insert(EdgeHash(bestIndex, newTriIndex0));
 			}
 		}
+
+		if (triangleIndices.size() >= 3*10000)
+			break;
 	}
 }
 
@@ -333,14 +455,19 @@ void SaveToOBJ(const std::string& filename, const std::vector<float3>& points, c
 
 void AppInit(const std::vector<std::string>& args)
 {
+	if (args.size() < 2)
+	{
+		Quit();
+		return;
+	}
+
 	const std::string inputFile = args[1];
 
 	SetWindowTitle(inputFile);
 
-	const int pointsPerTriangle = 10;
-	float minDistance;
-
-	if (!GeneratePointCloud(inputFile, pointsPerTriangle, g_points, minDistance))
+	const int pointsPerTriangle = 20;
+	
+	if (!GeneratePointCloud(inputFile, pointsPerTriangle, g_points, g_minDistance))
 	{
 		Quit();
 	}
@@ -349,7 +476,7 @@ void AppInit(const std::vector<std::string>& args)
 	g_cameraController.SetViewDirection(float4::k0010);
 	g_cameraController.SetViewDistance(length(g_modelSize) * 2.0f);
 
-	RollingBallTriangulation(g_points, g_triangleIndices, minDistance * 1.5f);
+	RollingBallTriangulation(g_points, g_triangleIndices, g_minDistance * 1.5f);
 }
 
 void AppResize(uint32_t windowWidth, uint32_t windowHeight)
@@ -357,6 +484,22 @@ void AppResize(uint32_t windowWidth, uint32_t windowHeight)
 
 void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 {
+	static auto startTime_ns = std::chrono::high_resolution_clock::now();
+	auto currentTime_ns = std::chrono::high_resolution_clock::now();
+	
+	std::chrono::nanoseconds duration_ns = currentTime_ns - startTime_ns;
+	float duration_ms = duration_ns.count() / 1e6f;
+
+	static uint32_t triIndexCount = 0;
+
+	if (duration_ms >= 1000)
+	{
+		startTime_ns = currentTime_ns;
+	
+		if (triIndexCount < g_triangleIndices.size())
+			triIndexCount += 3;
+	}
+
 	float modelRadius = length(g_modelSize) * 0.5f;
 	float zNear = std::max(0.01f, std::min(0.1f, g_cameraController.GetViewDistance() * 0.5f));
 	float zFar = std::max(1000.0f, std::max(zNear + modelRadius, distance(g_cameraController.GetViewPosition(), g_modelCenter) + modelRadius * 1.5f ));
@@ -368,7 +511,48 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 	g_cameraController.SetViewDistance(viewDistance);
 	g_cameraController.SetProjectionMtx( matrix44::MakePerspective( 60, (float)windowWidth / (float)windowHeight, zNear, zFar ) );
 
-	DrawMesh(g_points, g_triangleIndices, matrix44::kIdentity, float4::k1111, float4::k1001);
+	DrawMesh(g_points.data(), (uint32_t)g_points.size(), g_triangleIndices.data(), g_maxTriangleIndex>=0 ? g_maxTriangleIndex*3 : (uint32_t)g_triangleIndices.size(), matrix44::kIdentity, float4::k1111, float4::k1001);
+	DrawPoints(g_points.data(), (uint32_t)g_points.size(), matrix44::kIdentity, float4(1,1,1,1));
+
+	ImGui::SetNextWindowSize(ImVec2(450, 200));
+	ImGui::Begin("Controls");
+	{
+		ImGui::SliderInt("Triangles [1000]", &g_maxTriangleIndex, -1, std::min(1000u, (uint32_t)g_triangleIndices.size()/3));
+
+		ImGui::SliderInt("Triangles", &g_maxTriangleIndex, -1, (uint32_t)g_triangleIndices.size()/3);
+		
+		ImGui::SameLine();
+		if (ImGui::Button("-"))
+		{
+			g_maxTriangleIndex = std::max(g_maxTriangleIndex-1, -1);
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("+"))
+		{
+			g_maxTriangleIndex = std::min(g_maxTriangleIndex+1, (int)g_triangleIndices.size()/3);
+		}
+
+		if (ImGui::Button("Retriangulate"))
+		{
+			RollingBallTriangulation(g_points, g_triangleIndices, g_minDistance * 1.5f);
+		}
+
+		ImGui::Text("Hover Vertex: %u", GetHoverVertexIndex());
+	}
+	ImGui::End();
+
+	if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+		g_maxTriangleIndex = std::min(g_maxTriangleIndex+1, (int)g_triangleIndices.size()/3);
+
+	if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+		g_maxTriangleIndex = std::min(g_maxTriangleIndex+10, (int)g_triangleIndices.size()/3);
+
+	if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+		g_maxTriangleIndex = std::max(g_maxTriangleIndex-1, -1);
+
+	if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+		g_maxTriangleIndex = std::max(g_maxTriangleIndex-10, -1);
 }
 
 void AppExit()

@@ -65,7 +65,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			g_windowWidth = clientRect.right - clientRect.left;
 			g_windowHeight = clientRect.bottom - clientRect.top;
 
-			RenderD3D(g_windowWidth, g_windowHeight);
+			RenderD3D(g_windowWidth, g_windowHeight, g_inputCollector.GetMousePos());
 
 			break;
 		}
@@ -350,7 +350,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 			g_cameraController.ProcessInput(g_inputCollector);
 		}
 
-		RenderD3D(g_windowWidth, g_windowHeight);
+		RenderD3D(g_windowWidth, g_windowHeight, g_inputCollector.GetMousePos());
 	}
 
 	AppExit();

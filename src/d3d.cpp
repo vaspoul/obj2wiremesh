@@ -15,6 +15,10 @@ ID3D12CommandQueue*				g_commandQueue;
 ID3D12DescriptorHeap*			g_rtvHeap;
 ID3D12DescriptorHeap*			g_dsvHeap;
 ID3D12DescriptorHeap*			g_srvHeap;
+uint32_t						g_srvHeapAllocations = 0;
+uint32_t						g_srvHeapIncrement = 0;
+ID3D12DescriptorHeap*			g_srvCPUHeap;
+uint32_t						g_srvCPUHeapAllocations = 0;
 D3D12_CPU_DESCRIPTOR_HANDLE		g_rtvHandle[2];
 ID3D12Resource*					g_depthStencilBuffer;
 D3D12_CPU_DESCRIPTOR_HANDLE		g_dsvHandle;
@@ -34,8 +38,13 @@ ID3D12Resource*					g_imguiVertexBuffer[2];
 D3D12_VERTEX_BUFFER_VIEW		g_imguiVertexBufferView[2];
 ID3D12Resource*					g_imguiIndexBuffer[2];
 D3D12_INDEX_BUFFER_VIEW			g_imguiIndexBufferView[2];
+ID3D12Resource*					g_feedbackBuffer[2];
+D3D12_CPU_DESCRIPTOR_HANDLE		g_feedbackBufferCPUHandle[2];
+D3D12_GPU_DESCRIPTOR_HANDLE		g_feedbackBufferGPUHandle[2];
+ID3D12Resource*					g_downloadBuffer[2];
 
 ID3D12Resource*					g_imguiFontTex;
+
 ID3D12RootSignature*			g_rootSignature;
 ID3D12PipelineState*			g_pso_Tri_Fill;
 ID3D12PipelineState*			g_pso_Tri_Wire;
@@ -52,11 +61,14 @@ uint32_t						g_currentVertexCount = 0;
 uint32_t						g_currentIndexCount = 0;
 uint32_t						g_currentModelInstanceCount = 0;
 uint32_t						g_currentBufferIndex = 0;
+uint32_t						g_hoverVertexIndex = 0;
 
 struct CameraCB
 {
-	float4x4 viewProjMtx;
-	float4x4 orthoProjMtx;
+	float4x4	viewProjMtx;
+	float4x4	orthoProjMtx;
+	float2		mousePosUV;
+	float2		padding;
 };
 
 struct ModelInstanceCB
@@ -164,10 +176,16 @@ void InitD3D(HWND hwnd)
 		g_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&g_dsvHeap));
 
 		D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-		srvHeapDesc.NumDescriptors = 1;
+		srvHeapDesc.NumDescriptors = 64;
 		srvHeapDesc.Type	= D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		
 		srvHeapDesc.Flags	= D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		g_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_srvHeap));
+
+		srvHeapDesc.Flags	= D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		g_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_srvCPUHeap));
+
+		g_srvHeapIncrement = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	}
 
 	// Vertex & Index buffer
@@ -282,7 +300,7 @@ void InitD3D(HWND hwnd)
 
 	// Root signature
 	{
-		D3D12_ROOT_PARAMETER rootParameters[4];
+		D3D12_ROOT_PARAMETER rootParameters[5];
 
 		rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 		rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -300,17 +318,29 @@ void InitD3D(HWND hwnd)
 		rootParameters[2].Constants.RegisterSpace = 0;
 		rootParameters[2].Constants.Num32BitValues = 4;
 
-        D3D12_DESCRIPTOR_RANGE descRange = {};
-        descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        descRange.NumDescriptors = 1;
-        descRange.BaseShaderRegister = 1;
-        descRange.RegisterSpace = 0;
-        descRange.OffsetInDescriptorsFromTableStart = 0;
+        D3D12_DESCRIPTOR_RANGE descRange[2] = {};
+        
+		descRange[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        descRange[0].NumDescriptors = 1;
+        descRange[0].BaseShaderRegister = 1;
+        descRange[0].RegisterSpace = 0;
+        descRange[0].OffsetInDescriptorsFromTableStart = 0;
 
         rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         rootParameters[3].DescriptorTable.NumDescriptorRanges = 1;
-        rootParameters[3].DescriptorTable.pDescriptorRanges = &descRange;
-        rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[3].DescriptorTable.pDescriptorRanges = &descRange[0];
+        rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+		descRange[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        descRange[1].NumDescriptors = 1;
+        descRange[1].BaseShaderRegister = 0;
+        descRange[1].RegisterSpace = 0;
+        descRange[1].OffsetInDescriptorsFromTableStart = 0;
+
+        rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParameters[4].DescriptorTable.NumDescriptorRanges = 1;
+        rootParameters[4].DescriptorTable.pDescriptorRanges = &descRange[1];
+        rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
 		D3D12_STATIC_SAMPLER_DESC samplers[1];
 
@@ -349,6 +379,7 @@ void InitD3D(HWND hwnd)
 			{
 				float4x4 g_viewProjMtx;
 				float4x4 g_orthoProjMtx;
+				float2 g_mousePosUV;
 			};
 
 			struct ModelInstanceCB
@@ -358,6 +389,7 @@ void InitD3D(HWND hwnd)
 			};
 
 			StructuredBuffer<ModelInstanceCB> g_ModelInstanceData : register(t0);
+			RWBuffer<uint> g_FeedbackBuffer : register(u0);
 
 			cbuffer PushConstants : register(b1)
 			{
@@ -374,13 +406,29 @@ void InitD3D(HWND hwnd)
 				float4 position : SV_POSITION;
 			};
 
-			PSInput main(VSInput input) 
+			PSInput main(VSInput input, uint vertexID : SV_VertexID) 
 			{
 				PSInput output;
 
 				float4 pos = float4(input.position, 1.0);
 
-				output.position = mul( mul(pos, g_ModelInstanceData[g_pushConstants.x].modelMtx), g_viewProjMtx);
+				float4 worldPos = mul(pos, g_ModelInstanceData[g_pushConstants.x].modelMtx);
+				float4 ndcPos = mul( worldPos, g_viewProjMtx);
+				float3 screenPos = ndcPos.xyz / ndcPos.w;
+				float2 screenPosUV = screenPos.xy * float2(0.5, -0.5) + 0.5;
+
+				float distanceToMouse = distance(screenPosUV, g_mousePosUV);
+		
+				uint dummy;
+				InterlockedMin(g_FeedbackBuffer[0], asuint(distanceToMouse), dummy);
+
+				if (g_FeedbackBuffer[0] == asuint(distanceToMouse))
+				{
+					g_FeedbackBuffer[1] = vertexID;
+				}
+
+				output.position = ndcPos;
+
 				return output;
 			}
 		)";
@@ -390,6 +438,7 @@ void InitD3D(HWND hwnd)
 			{
 				float4x4 g_viewProjMtx;
 				float4x4 g_orthoProjMtx;
+				float2 g_mousePosUV;
 			};
 
 			struct ModelInstanceCB
@@ -458,9 +507,10 @@ void InitD3D(HWND hwnd)
 		defaultPSODesc.BlendState.AlphaToCoverageEnable					= FALSE;
 		defaultPSODesc.BlendState.IndependentBlendEnable				= FALSE;
 		defaultPSODesc.BlendState.RenderTarget[0].BlendEnable			= FALSE;
+		//defaultPSODesc.BlendState.RenderTarget[0].BlendEnable			= TRUE;
 		defaultPSODesc.BlendState.RenderTarget[0].LogicOpEnable			= FALSE;
 		defaultPSODesc.BlendState.RenderTarget[0].SrcBlend				= D3D12_BLEND_ONE;
-		defaultPSODesc.BlendState.RenderTarget[0].DestBlend				= D3D12_BLEND_ZERO;
+		defaultPSODesc.BlendState.RenderTarget[0].DestBlend				= D3D12_BLEND_ONE;
 		defaultPSODesc.BlendState.RenderTarget[0].BlendOp				= D3D12_BLEND_OP_ADD;
 		defaultPSODesc.BlendState.RenderTarget[0].SrcBlendAlpha			= D3D12_BLEND_ONE;
 		defaultPSODesc.BlendState.RenderTarget[0].DestBlendAlpha		= D3D12_BLEND_ZERO;
@@ -505,6 +555,100 @@ void InitD3D(HWND hwnd)
 		g_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_pso_Points));
 	}
 
+	// Feedback buffer
+	{
+		D3D12_HEAP_PROPERTIES resourceHeapProps;
+		resourceHeapProps.Type					= D3D12_HEAP_TYPE_DEFAULT;
+		resourceHeapProps.CPUPageProperty		= D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		resourceHeapProps.MemoryPoolPreference	= D3D12_MEMORY_POOL_UNKNOWN;
+		resourceHeapProps.CreationNodeMask		= 0;
+		resourceHeapProps.VisibleNodeMask		= 0;
+
+		D3D12_RESOURCE_DESC resourceDesc;
+		resourceDesc.Dimension			= D3D12_RESOURCE_DIMENSION_BUFFER;
+		resourceDesc.Alignment			= 0;
+		resourceDesc.Height				= 1;
+		resourceDesc.DepthOrArraySize	= 1;
+		resourceDesc.MipLevels			= 1;
+		resourceDesc.Format				= DXGI_FORMAT_UNKNOWN;
+		resourceDesc.SampleDesc			= {1,0};
+		resourceDesc.Layout				= D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		resourceDesc.Flags				= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+		for (int i=0; i!=2; ++i)
+		{
+			resourceDesc.Width = sizeof(uint32_t) * 32;
+
+			g_device->CreateCommittedResource(	&resourceHeapProps,
+												D3D12_HEAP_FLAG_NONE,
+												&resourceDesc,
+												D3D12_RESOURCE_STATE_COMMON,
+												nullptr,
+												IID_PPV_ARGS(&g_feedbackBuffer[i]) );
+
+
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc;
+			ZeroMemory(&uavDesc, sizeof(uavDesc));
+			uavDesc.Format						= DXGI_FORMAT_R32_UINT;
+			uavDesc.ViewDimension				= D3D12_UAV_DIMENSION_BUFFER;
+			uavDesc.Buffer.FirstElement			= 0;
+			uavDesc.Buffer.NumElements			= 32;
+			uavDesc.Buffer.StructureByteStride	= 0;
+			uavDesc.Buffer.CounterOffsetInBytes	= 0;
+			uavDesc.Buffer.Flags				= D3D12_BUFFER_UAV_FLAG_NONE;
+			
+			D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = g_srvHeap->GetCPUDescriptorHandleForHeapStart();
+			D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = g_srvHeap->GetGPUDescriptorHandleForHeapStart();
+			cpuHandle.ptr += g_srvHeapAllocations * g_srvHeapIncrement;
+			gpuHandle.ptr += g_srvHeapAllocations * g_srvHeapIncrement;
+			++g_srvHeapAllocations;
+			
+			g_device->CreateUnorderedAccessView(g_feedbackBuffer[i], nullptr, &uavDesc, cpuHandle);
+
+			cpuHandle = g_srvCPUHeap->GetCPUDescriptorHandleForHeapStart();
+			cpuHandle.ptr += g_srvCPUHeapAllocations * g_srvHeapIncrement;
+			++g_srvCPUHeapAllocations;
+			
+			g_device->CreateUnorderedAccessView(g_feedbackBuffer[i], nullptr, &uavDesc, cpuHandle);
+
+			g_feedbackBufferCPUHandle[i] = cpuHandle;
+			g_feedbackBufferGPUHandle[i] = gpuHandle;
+		}
+	}
+
+	// Download buffer
+	{
+		D3D12_HEAP_PROPERTIES resourceHeapProps;
+		resourceHeapProps.Type					= D3D12_HEAP_TYPE_READBACK;
+		resourceHeapProps.CPUPageProperty		= D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		resourceHeapProps.MemoryPoolPreference	= D3D12_MEMORY_POOL_UNKNOWN;
+		resourceHeapProps.CreationNodeMask		= 0;
+		resourceHeapProps.VisibleNodeMask		= 0;
+
+		D3D12_RESOURCE_DESC resourceDesc;
+		resourceDesc.Dimension			= D3D12_RESOURCE_DIMENSION_BUFFER;
+		resourceDesc.Alignment			= 0;
+		resourceDesc.Height				= 1;
+		resourceDesc.DepthOrArraySize	= 1;
+		resourceDesc.MipLevels			= 1;
+		resourceDesc.Format				= DXGI_FORMAT_UNKNOWN;
+		resourceDesc.SampleDesc			= {1,0};
+		resourceDesc.Layout				= D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		resourceDesc.Flags				= D3D12_RESOURCE_FLAG_NONE;
+
+		for (int i=0; i!=2; ++i)
+		{
+			resourceDesc.Width = sizeof(uint32_t) * 32;
+
+			g_device->CreateCommittedResource(	&resourceHeapProps,
+												D3D12_HEAP_FLAG_NONE,
+												&resourceDesc,
+												D3D12_RESOURCE_STATE_COMMON,
+												nullptr,
+												IID_PPV_ARGS(&g_downloadBuffer[i]) );
+		}
+	}
+
 	// imgui
 	{
 		// shader
@@ -514,6 +658,7 @@ void InitD3D(HWND hwnd)
 				{
 					float4x4 g_viewProjMtx;
 					float4x4 g_orthoProjMtx;
+					float2 g_mousePosUV;
 				};
 
 				struct VSInput 
@@ -794,9 +939,16 @@ void InitD3D(HWND hwnd)
 			srvDesc.Texture2D.MipLevels			= fontTexDesc.MipLevels;
 			srvDesc.Texture2D.MostDetailedMip	= 0;
 			srvDesc.Shader4ComponentMapping		= D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-			g_device->CreateShaderResourceView(g_imguiFontTex, &srvDesc, g_srvHeap->GetCPUDescriptorHandleForHeapStart());
+			
+			D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = g_srvHeap->GetCPUDescriptorHandleForHeapStart();
+			D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = g_srvHeap->GetGPUDescriptorHandleForHeapStart();
+			cpuHandle.ptr += g_srvHeapAllocations * g_srvHeapIncrement;
+			gpuHandle.ptr += g_srvHeapAllocations * g_srvHeapIncrement;
+			++g_srvHeapAllocations;
+			
+			g_device->CreateShaderResourceView(g_imguiFontTex, &srvDesc, cpuHandle);
 
-			io.Fonts->SetTexID((ImTextureID)g_srvHeap->GetGPUDescriptorHandleForHeapStart().ptr);
+			io.Fonts->SetTexID((ImTextureID)gpuHandle.ptr);
 		}
 	}
 }
@@ -914,7 +1066,7 @@ void ResizeD3D(HWND hwnd, uint32_t width, uint32_t height)
 	}
 }
 
-void RenderD3D(uint32_t windowWidth, uint32_t windowHeight) 
+void RenderD3D(uint32_t windowWidth, uint32_t windowHeight, const float2& mousePosUV) 
 {
 	++g_fenceValue;
 
@@ -928,6 +1080,18 @@ void RenderD3D(uint32_t windowWidth, uint32_t windowHeight)
 
 	g_currentBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 	assert(g_currentBufferIndex<2);
+
+	// Copy oldest download buffer
+	{
+		void* pData;
+
+		g_downloadBuffer[g_currentBufferIndex]->Map(0, nullptr, &pData);
+		{
+			g_hoverVertexIndex = ((uint32_t*)pData)[1];
+
+		}
+		g_downloadBuffer[g_currentBufferIndex]->Unmap(0, nullptr);
+	}
 
 	g_currentVertexCount = 0;
 	g_currentIndexCount = 0;
@@ -986,6 +1150,8 @@ void RenderD3D(uint32_t windowWidth, uint32_t windowHeight)
 		cb->viewProjMtx = mul(viewMtx, projMtx);
 
 		cb->orthoProjMtx = matrix44::MakeOrtho(0, (float)windowWidth, 0, (float)windowHeight, 0, 1);
+
+		cb->mousePosUV = mousePosUV;
 	}
 	g_cbCamera->Unmap(0, nullptr);
 	
@@ -993,6 +1159,10 @@ void RenderD3D(uint32_t windowWidth, uint32_t windowHeight)
     g_currentCommandList->IASetVertexBuffers(0, 1, &g_vertexBufferView[g_currentBufferIndex]);
 	g_currentCommandList->IASetIndexBuffer(&g_indexBufferView[g_currentBufferIndex]);
 	g_currentCommandList->SetGraphicsRootConstantBufferView(0, g_cbCamera->GetGPUVirtualAddress());
+	g_currentCommandList->SetGraphicsRootDescriptorTable(4, g_feedbackBufferGPUHandle[g_currentBufferIndex]);
+	float maxDist = 1e6;
+	uint32_t clearValues[4] = { *(uint32_t*)&maxDist, *(uint32_t*)&maxDist, *(uint32_t*)&maxDist, *(uint32_t*)&maxDist };
+	g_currentCommandList->ClearUnorderedAccessViewUint(g_feedbackBufferGPUHandle[g_currentBufferIndex], g_feedbackBufferCPUHandle[g_currentBufferIndex], g_feedbackBuffer[g_currentBufferIndex], clearValues, 0, nullptr);
 
 	ImGui::NewFrame();
 
@@ -1013,6 +1183,24 @@ void RenderD3D(uint32_t windowWidth, uint32_t windowHeight)
 			};
 
 			DrawLines(axisPoints, 6, matrix44::MakeTranslation(g_cameraController.GetTarget().xyz), float4(0.5f, 0.5f, 0.5f, 1));
+		}
+
+		// Download feedback buffer
+		{
+			D3D12_RESOURCE_BARRIER copyBarrier = {};
+			copyBarrier.Type					= D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			copyBarrier.Flags					= D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			copyBarrier.Transition.pResource   = g_feedbackBuffer[g_currentBufferIndex];
+			copyBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			copyBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			copyBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			g_currentCommandList->ResourceBarrier(1, &copyBarrier);
+
+			g_currentCommandList->CopyResource(g_downloadBuffer[g_currentBufferIndex], g_feedbackBuffer[g_currentBufferIndex]);
+
+			copyBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			copyBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			g_currentCommandList->ResourceBarrier(1, &copyBarrier);
 		}
 
 		g_insideAppRender = false;
@@ -1130,6 +1318,11 @@ void RenderImGui()
 			global_vtx_offset += draw_list->VtxBuffer.Size;
 		}
 	}
+}
+
+uint32_t GetHoverVertexIndex()
+{
+	return g_hoverVertexIndex;
 }
 
 void DrawMesh(const float3* positions, uint32_t pointCount, uint32_t* indices, uint32_t indexCount, const matrix44& worldMtx, float4 fillColor, float4 wireColor)

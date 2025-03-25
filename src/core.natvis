@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+
+<Type Name="float2">
+    <DisplayString>{{x:{x}, y:{y}}}</DisplayString>
+    <Expand>
+        <Item Name="x">x</Item>
+        <Item Name="y">y</Item>
+    </Expand>
+</Type>
+
+<Type Name="float3">
+    <DisplayString>{{x:{x}, y:{y}, z:{z}}}</DisplayString>
+    <Expand>
+        <Item Name="x">x</Item>
+        <Item Name="y">y</Item>
+        <Item Name="z">z</Item>
+    </Expand>
+</Type>
+
+<Type Name="float4">
+    <DisplayString>{{x:{x}, y:{y}, z:{z}, w:{w}}}</DisplayString>
+    <Expand>
+        <Item Name="x">x</Item>
+        <Item Name="y">y</Item>
+        <Item Name="z">z</Item>
+		<Item Name="w">w</Item>
+    </Expand>
+</Type>
+
+<Type Name="matrix33">
+    <Expand>
+		<Synthetic Name="row0"> <DisplayString>{_00}, {_01}, {_02}</DisplayString> </Synthetic>
+		<Synthetic Name="row1"> <DisplayString>{_10}, {_11}, {_12}</DisplayString> </Synthetic>
+		<Synthetic Name="row2"> <DisplayString>{_20}, {_21}, {_22}</DisplayString> </Synthetic>
+    </Expand>
+</Type>
+
+<Type Name="matrix43">
+    <Expand>
+		<Synthetic Name="row0"> <DisplayString>{_00}, {_01}, {_02}</DisplayString> </Synthetic>
+		<Synthetic Name="row1"> <DisplayString>{_10}, {_11}, {_12}</DisplayString> </Synthetic>
+		<Synthetic Name="row2"> <DisplayString>{_20}, {_21}, {_22}</DisplayString> </Synthetic>
+		<Synthetic Name="row3"> <DisplayString>{_30}, {_31}, {_32}</DisplayString> </Synthetic>
+    </Expand>
+</Type>
+
+<Type Name="matrix34">
+    <Expand>
+		<Synthetic Name="row0"> <DisplayString>{_00}, {_01}, {_02}, {_03}</DisplayString> </Synthetic>
+		<Synthetic Name="row1"> <DisplayString>{_10}, {_11}, {_12}, {_13}</DisplayString> </Synthetic>
+		<Synthetic Name="row2"> <DisplayString>{_20}, {_21}, {_22}, {_23}</DisplayString> </Synthetic>
+    </Expand>
+</Type>
+
+<Type Name="matrix44">
+    <Expand>
+		<Synthetic Name="row0"> <DisplayString>{_00}, {_01}, {_02}, {_03}</DisplayString> </Synthetic>
+		<Synthetic Name="row1"> <DisplayString>{_10}, {_11}, {_12}, {_13}</DisplayString> </Synthetic>
+		<Synthetic Name="row2"> <DisplayString>{_20}, {_21}, {_22}, {_23}</DisplayString> </Synthetic>
+		<Synthetic Name="row3"> <DisplayString>{_30}, {_31}, {_32}, {_33}</DisplayString> </Synthetic>
+    </Expand>
+</Type>
+
+<Type Name="Frustum">
+    <Expand>
+		<Synthetic Name="Position"> <DisplayString>{m_InvViewMtx._30}, {m_InvViewMtx._31}, {m_InvViewMtx._32}</DisplayString> </Synthetic>
+		<Synthetic Name="Direction"> <DisplayString>{m_InvViewMtx._02}, {m_InvViewMtx._12}, {m_InvViewMtx._22}</DisplayString> </Synthetic>
+		<Synthetic Name="Up"> <DisplayString>{m_InvViewMtx._01}, {m_InvViewMtx._11}, {m_InvViewMtx._21}</DisplayString> </Synthetic>
+		<Synthetic Name="Right"> <DisplayString>{m_InvViewMtx._00}, {m_InvViewMtx._10}, {m_InvViewMtx._20}</DisplayString> </Synthetic>
+		
+		<Synthetic Name="Perspective">
+			<DisplayString Condition="m_ProjMtx._23 == 1">yes</DisplayString> 
+			<DisplayString Condition="m_ProjMtx._23 != 1">no</DisplayString> 
+		</Synthetic>
+
+		<Synthetic Name="FOV (approx)"> <DisplayString> { 2 * 180 / 3.1415926535897932384626433832795 * (0.78539816339744830961566084581988 * m_ProjMtx._11 - m_ProjMtx._11 * (m_ProjMtx._11 - 1) * (0.2447 + 0.0663 * m_ProjMtx._11))   </DisplayString> </Synthetic>
+
+		<Synthetic Name="Aspect"> <DisplayString> {m_ProjMtx._11 / m_ProjMtx._00} </DisplayString> </Synthetic>
+
+		<Synthetic Name="Near"> <DisplayString> {-m_ProjMtx._32 / m_ProjMtx._22} </DisplayString> </Synthetic>
+		<Synthetic Name="Far"> <DisplayString> {-m_ProjMtx._32 / (m_ProjMtx._22 - 1.0f)} </DisplayString> </Synthetic>
+
+		<Item Name="Clipping Planes">{m_clippingPlanesWorldSpace}</Item>
+    </Expand>
+</Type>
+
+<Type Name="Sphere">
+	<DisplayString>{{x:{m_positionRadius.x}, y:{m_positionRadius.y}, z:{m_positionRadius.z}, R:{m_positionRadius.w}}}</DisplayString>
+    <Expand>
+        <Item Name="x">m_positionRadius.x</Item>
+        <Item Name="y">m_positionRadius.y</Item>
+        <Item Name="z">m_positionRadius.z</Item>
+		<Item Name="R">m_positionRadius.w</Item>
+    </Expand>
+</Type>
+
+<Type Name="ResourceID">
+	<DisplayString>{id:{id,X}, uuid:{uuid,X}, typeHash:{typeHash,X}, platform:{platform,X}}</DisplayString>
+</Type>
+
+<Type Name="DebugString">
+	<DisplayString>{m_str,s}</DisplayString>
+</Type>
+
+<Type Name="Profiler::Node">
+	<DisplayString>{{{label,s}, CPU:{isCPUNode}, Start:{startTime_us}, Duration:{duration_us}, Frame:{startFrame}, Thread:{threadIndex}, Stack:{stackDepth} }}</DisplayString>
+</Type>
+	
+	
+</AutoVisualizer>

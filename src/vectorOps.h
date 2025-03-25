@@ -1282,8 +1282,21 @@ inline int ClipEdgeAgainstPlaneNeg(const float4& planeEquation, float4& p0, floa
 inline float3 TriangleNormal(const float3& p0, const float3& p1, const float3& p2)
 {
 	float3 p01 = sub(p1, p0).unit();
-	float3 p12 = sub(p2, p1).unit();
-	float3 N = cross(p01, p12).unit();
+	float3 p02 = sub(p2, p0).unit();
+	float3 N = cross(p01, p02).unit();
 
 	return N;
+}
+
+inline float DistanceToEdge(const float3& p0, const float3& p1, const float3& p)
+{
+	float edgeLengthSq = distanceSqr(p0, p1);
+
+	float t = dot(p - p0, p1 - p0) / edgeLengthSq;
+
+	t = saturate(t);
+
+	float3 closestPoint = lerp(p0, p1, t);
+
+	return distance(p, closestPoint);
 }
