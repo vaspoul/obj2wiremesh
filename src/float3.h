@@ -91,7 +91,7 @@ struct float3
 	{
 		float mag = length();
 
-		assert(fabs(mag) > 1e-5);
+		assert(fabs(mag) > FLT_MIN);
     
 		return (*this) * (1.0f/mag);
 	}

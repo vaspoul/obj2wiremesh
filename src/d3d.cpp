@@ -56,7 +56,7 @@ ID3D12Resource*					g_sbModelInstance;
 bool							g_insideAppRender = false;
 const uint32_t					g_maxVertexCount = 2*1024*1024;
 const uint32_t					g_maxIndexCount = 2*1024*1024;
-const uint32_t					g_maxModelInstanceCount = 2*1024;
+const uint32_t					g_maxModelInstanceCount = 256*1024;
 uint32_t						g_currentVertexCount = 0;
 uint32_t						g_currentIndexCount = 0;
 uint32_t						g_currentModelInstanceCount = 0;
@@ -1135,7 +1135,7 @@ void RenderD3D(uint32_t windowWidth, uint32_t windowHeight, const float2& mouseP
 
 	g_currentCommandList->RSSetScissorRects(1, &d3dScissor);
 
-	float clearColor[] = { 0.2f, 0.4f, 0.6f, 1.0f };
+	float clearColor[] = { 0.2f, 0.2f, 0.2f, 1.0f };
 	g_currentCommandList->ClearRenderTargetView(g_rtvHandle[g_currentBufferIndex], clearColor, 0, nullptr);
 	g_currentCommandList->ClearDepthStencilView(g_dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
@@ -1417,6 +1417,42 @@ void DrawLines(const float3* positions, uint32_t pointCount, const matrix44& wor
 	g_currentCommandList->SetPipelineState(g_pso_Lines);
 
 	g_currentCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+
+	uint4 instanceData(g_currentModelInstanceCount, 0, 0, 0);
+	g_currentCommandList->SetGraphicsRoot32BitConstants(2, 4, &instanceData, 0);
+
+	g_currentCommandList->DrawInstanced( (uint32_t)pointCount, 1, g_currentVertexCount, 0);
+
+	g_currentVertexCount += (uint32_t)pointCount;
+	g_currentModelInstanceCount += 1;
+}
+
+void DrawLineStrip(const float3* positions, uint32_t pointCount, const matrix44& worldMtx, float4 color)
+{
+	assert(g_insideAppRender);
+	assert( g_currentVertexCount + pointCount <= g_maxVertexCount );
+	assert( g_currentModelInstanceCount + 1 <= g_maxModelInstanceCount );
+
+	void* pData;
+	
+	g_vertexBuffer[g_currentBufferIndex]->Map(0, nullptr, &pData);
+	{
+		memcpy( (float3*)pData + g_currentVertexCount, positions, pointCount * sizeof(float3));
+	}
+	g_vertexBuffer[g_currentBufferIndex]->Unmap(0, nullptr);
+
+	g_sbModelInstance->Map(0, nullptr, &pData);
+	{
+		ModelInstanceCB* cb = (ModelInstanceCB*)pData + g_currentModelInstanceCount;
+
+		cb->modelMtx = worldMtx;
+		cb->color = color;
+	}
+	g_sbModelInstance->Unmap(0, nullptr);
+
+	g_currentCommandList->SetPipelineState(g_pso_Lines);
+
+	g_currentCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
 
 	uint4 instanceData(g_currentModelInstanceCount, 0, 0, 0);
 	g_currentCommandList->SetGraphicsRoot32BitConstants(2, 4, &instanceData, 0);

@@ -705,7 +705,7 @@ static inline float3 normalize(const float3& v)
 {
 	float mag = v.length();
 
-	assert(fabs(mag) > 1e-5);
+	assert(fabs(mag) > FLT_MIN);
     
     return v * (1.0f/mag);
 }
