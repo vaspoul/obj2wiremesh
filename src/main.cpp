@@ -13,21 +13,16 @@ float								g_avgTriangleArea = 0;
 float								g_printbedSize = 210;
 
 int									g_pointsPerTriangle = 20;
-bool								g_stratifiedPoints = true;
+bool								g_stratifiedPoints = false;
 std::vector<float3>					g_points;
 std::vector<float3>					g_controlPoints;
 std::vector<uint32_t>				g_triangleIndices;
 
 float								g_minDistance;
 float								g_minPointDistanceFactor = 1.5f;
-float								g_influenceRadiusFactor = 2.0f;
-float								g_springConstant = 1;
-float								g_applyFactor = 1;
-int									g_simulationIterationCount = 5;
-
-int									g_maxCellBoundaryIndex = -1;
 int									g_tubeSegments = 10;
 
+int									g_maxCellBoundaryIndex = -1;
 bool								g_showControlPoints = false;
 
 float TriangleArea(const float3& v0, const float3& v1, const float3& v2)
@@ -35,14 +30,6 @@ float TriangleArea(const float3& v0, const float3& v1, const float3& v2)
 	float3 crossProd = cross(v1-v0, v2-v0);
 	return 0.5f * std::sqrt(crossProd.x * crossProd.x + crossProd.y * crossProd.y + crossProd.z * crossProd.z);
 }
-
-#include <iostream>
-#include <vector>
-#include <cmath>
-
-struct Point2D {
-	float x, y;
-};
 
 // Solve linear system using Gaussian elimination
 void gaussianElimination(std::vector<std::vector<float>>& A, std::vector<float>& b)
@@ -345,7 +332,7 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 	points = reducedPoints;
 	g_controlPoints = controlPoints;
 
-	for (int k=0; k!=g_simulationIterationCount; ++k)
+	//for (int k=0; k!=g_simulationIterationCount; ++k)
 	for (int i=0; i!=points.size(); ++i)
 	{
 		float3& p = points[i];
@@ -446,29 +433,9 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 
 		avgN = normalize(avgN);
 
-		float3 edgeX;
-		float3 edgeY;
 		float3 edgeZ = normalize(p1 - p0);
-
-		//{
-		//	float3 edgeVec = p1 - p0;
-		//	
-		//	edgeZ = normalize(p1 - p0);
-
-		//	if (fabs(dot(edgeZ, float3::k010)) >= 0.999f)
-		//	{
-		//		edgeX = float3::k100;
-		//		edgeY = -float3::k001;
-		//	}
-		//	else
-		//	{
-		//		edgeX = normalize(cross(edgeZ, float3::k001));
-		//		edgeY = normalize(cross(edgeZ, edgeX));
-		//	}
-		//}
-
-		edgeY = avgN;
-		edgeX = normalize(cross(edgeY, edgeZ));
+		float3 edgeY = avgN;
+		float3 edgeX = normalize(cross(edgeY, edgeZ));
 
 		float pointsAvgX = 0;
 		float pointsAvgY = 0;
@@ -507,94 +474,6 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 			float3 tubeP = midP + edgeX * x + edgeY * y;
 
 			cellBoundary.tubePoints.push_back(tubeP);
-		}
-
-
-		//pointsAvgX /= (float)cellBoundary.points.size();
-		//pointsAvgY /= (float)cellBoundary.points.size();
-
-		//float deltaX = pointsMaxX - pointsMinX;
-		//float deltaY = pointsMaxY - pointsMinY;
-
-		//float3 tubeZ = deltaX > deltaY ? edgeX : edgeY;
-		//float3 tubeY = deltaX > deltaY ? edgeY : edgeX;
-		//float3 tubeX = edgeZ;
-
-		//float segmentLength = std::max(deltaX, deltaY) / (float)g_tubeSegments;
-		//
-		//float tubeMinZ = ( deltaX > deltaY ? pointsMinX : pointsMinY );
-
-		//for (int s=0; s != g_tubeSegments; ++s)
-		//{
-		//	float segmentMinZ = tubeMinZ + (s + 0) * segmentLength;
-		//	float segmentMaxZ = tubeMinZ + (s + 1) * segmentLength;
-
-		//	float segmentCount = 0;
-		//	float segmentAvgX = 0;
-		//	float segmentAvgY = 0;
-		//	float segmentMinX = FLT_MAX;
-		//	float segmentMinY = FLT_MAX;
-		//	float segmentMaxX = -FLT_MAX;
-		//	float segmentMaxY = -FLT_MAX;
-
-		//	for (const float3& p : cellBoundary.points)
-		//	{
-		//		float pX = dot(p - p0, tubeX);
-		//		float pY = dot(p - p0, tubeY);
-		//		float pZ = dot(p - p0, tubeZ);
-
-		//		if (pZ < segmentMinZ || pZ > segmentMaxZ)
-		//			continue;
-
-		//		segmentCount += 1;
-		//		segmentAvgX += pX;
-		//		segmentAvgY += pY;
-		//		segmentMinX = std::min(segmentMinX, pX);
-		//		segmentMinY = std::min(segmentMinY, pY);
-		//		segmentMaxX = std::max(segmentMaxX, pX);
-		//		segmentMaxY = std::max(segmentMaxY, pY);
-		//	}
-
-		//	if (segmentCount)
-		//	{
-		//		segmentAvgX /= segmentCount;
-		//		segmentAvgY /= segmentCount;
-		//	}
-
-		//	float3 avgP = p0 + tubeX * segmentAvgX + tubeY * segmentAvgY + tubeZ * (segmentMinZ + segmentMaxZ) * 0.5f;
-
-		//	cellBoundary.tubePoints.push_back(avgP);
-		//}
-	}
-}
-
-void RunSimulationStep()
-{
-	const float influenceRadius = g_minDistance * g_influenceRadiusFactor;
-		
-	for (int k=0; k!=g_simulationIterationCount; ++k)
-	{
-		for (int i=0; i!=g_points.size(); ++i)
-		{
-			float3& p = g_points[i];
-
-			float3 totalForce = float3::k000;
-
-			for (int j=0; j!=g_controlPoints.size(); ++j)
-			{
-				float d = distance(g_controlPoints[j], p);
-
-				if ( d < FLT_MIN || d > influenceRadius)
-					continue;
-
-				float3 dir = normalize(p - g_controlPoints[j]);
-
-				float3 force = dir * (influenceRadius - d) * g_springConstant;
-
-				totalForce += force;
-			}
-
-			p += totalForce / g_applyFactor;
 		}
 	}
 }
@@ -770,12 +649,6 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 		ImGui::SliderInt("Points per triangle", &g_pointsPerTriangle, 1, 100);
 		ImGui::Checkbox("Stratified Points", &g_stratifiedPoints);
 		ImGui::SliderFloat("Min Point Distance Factor", &g_minPointDistanceFactor, 0, 5);
-
-		ImGui::SliderFloat("g_influenceRadiusFactor", &g_influenceRadiusFactor, 0, 5);
-		ImGui::SliderFloat("g_springConstant", &g_springConstant, 0, 100);
-		ImGui::SliderFloat("g_applyFactor", &g_applyFactor, 0, 100);
-		ImGui::SliderInt("g_simulationIterationCount", &g_simulationIterationCount, 1, 30);
-
 		ImGui::SliderInt("Tube Segments", &g_tubeSegments, 1, 30);
 
 		ImGui::Checkbox("Show Control Points", &g_showControlPoints);
@@ -784,9 +657,6 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 		{
 			GeneratePointCloud(g_points, g_minDistance);
 		}
-
-		if (ImGui::Button("Simulation Step"))
-			RunSimulationStep();
 
 		ImGui::Text("Hover Vertex: %u", GetHoverVertexIndex());
 	}
