@@ -18,9 +18,10 @@ std::vector<float3>					g_points;
 std::vector<float3>					g_controlPoints;
 std::vector<uint32_t>				g_triangleIndices;
 
-float								g_minDistance;
-float								g_minPointDistanceFactor = 1.5f;
-int									g_tubeSegments = 10;
+float								g_cellRadius = 5;
+int									g_tubeSegmentCount = 20;
+int									g_tubeAngleCount = 16;
+float								g_tubeRadius = 0.5;
 
 int									g_maxCellBoundaryIndex = -1;
 bool								g_showControlPoints = false;
@@ -108,6 +109,20 @@ float EvaluatePolynomial(const std::vector<float>& coeff, float x)
 	for (float c : coeff)
 	{
 		result += c * power;
+		power *= x;
+	}
+
+	return result;
+}
+
+float EvaluatePolynomialSlope(const std::vector<float>& coeff, float x)
+{
+	float result = 0.0f;
+	float power = 1.0f;
+
+	for (int i = 1; i < coeff.size(); ++i)
+	{
+		result += i * coeff[i] * power;
 		power *= x;
 	}
 
@@ -277,7 +292,7 @@ uint64_t EdgeHash(uint32_t i0, uint32_t i1)
 	return ((uint64_t)std::min(i0,i1) << 32) | ((uint64_t)std::max(i0,i1));
 }
 
-void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
+void GeneratePointCloud(std::vector<float3>& points)
 {
 	points.clear();
 	g_cellBoundaries.clear();
@@ -305,8 +320,6 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 		}
 	}
 
-	g_minDistance = sqrtf(g_avgTriangleArea * 2.0f) * g_minPointDistanceFactor;
-
 	std::vector<float3> controlPoints;
 	std::vector<float3> reducedPoints;
 
@@ -316,7 +329,7 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 
 		for (const float3& q : controlPoints) 
 		{
-			if (distance(p, q) < g_minDistance) 
+			if (distance(p, q) < g_cellRadius) 
 			{
 				keep = false;
 				break;
@@ -351,7 +364,7 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 			{
 				float d = distance(controlPoints[j], p);
 
-				if (d < g_minDistance * 0.001f)
+				if (d < g_cellRadius * 0.001f)
 					continue;
 
 				if (d <= bestDistance0)
@@ -462,18 +475,52 @@ void GeneratePointCloud(std::vector<float3>& points, float& minDistance)
 			points2D.push_back(float2(pX, pY));
 		}
 
-		std::vector<float> polynomialFactors = polynomialFit(points2D, 6);
+		std::sort(points2D.begin(), points2D.end(), [](const float2& a, const float2& b)->int
+		{
+			return a.x < b.x ? -1 : 1;
+		});
 
-		float stepX = (pointsMaxX - pointsMinX) / (float)g_tubeSegments;
+		std::vector<float> polynomialFactors = polynomialFit(points2D, std::min((int)points2D.size()-2, 3));
 
-		for (int s=0; s != g_tubeSegments; ++s)
+		bool valid = true;
+		for (float c : polynomialFactors)
+		{
+			if (!std::isfinite(c))
+			{
+				valid = false;
+				break;
+			}
+		}
+
+		if (!valid)
+			continue;
+
+		float stepX = (pointsMaxX - pointsMinX) / (float)g_tubeSegmentCount;
+
+		for (int s=0; s != g_tubeSegmentCount; ++s)
 		{
 			float x = pointsMinX + s * stepX;
 			float y = EvaluatePolynomial(polynomialFactors, x);
+			float dy_dx = EvaluatePolynomialSlope(polynomialFactors, x);
+
+			float3 polyZ = normalize( edgeY * dy_dx + edgeX );
+			float3 polyX = edgeZ;
+			float3 polyY = normalize(cross(polyZ, polyX));
 
 			float3 tubeP = midP + edgeX * x + edgeY * y;
-
 			cellBoundary.tubePoints.push_back(tubeP);
+
+			float angleStep = (float)M_PI * 2.0f / (float)g_tubeAngleCount;
+
+			for (int a=0; a != g_tubeAngleCount; ++a)
+			{
+				float dx = cosf(angleStep * a);
+				float dy = sinf(angleStep * a);
+
+				float3 p = tubeP + polyX * dx  * g_tubeRadius + polyY * dy * g_tubeRadius;
+
+				//cellBoundary.tubePoints.push_back(p);
+			}
 		}
 	}
 }
@@ -538,7 +585,7 @@ void AppInit(const std::vector<std::string>& args)
 	g_cameraController.SetViewDirection(float4::k0010);
 	g_cameraController.SetViewDistance(length(g_modelSize) * 2.0f);
 
-	GeneratePointCloud(g_points, g_minDistance);
+	GeneratePointCloud(g_points);
 }
 
 void AppResize(uint32_t windowWidth, uint32_t windowHeight)
@@ -613,10 +660,10 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 			std::vector<float3> points = cellBoundary.tubePoints;
 			points.insert(points.begin(), cellBoundary.p0);
 			points.push_back(cellBoundary.p1);
-
-			//DrawPoints(cellBoundary.points.data(), (uint32_t)cellBoundary.points.size(), matrix44::kIdentity, float4(0.5f, 0.5f, 0.5f, 1));
 			//DrawLineStrip(points.data(), (int)points.size(), matrix44::kIdentity, count%2 ? float4(0.8f, 0.8f, 1.0f, 1.0f) : float4(0.8f, 1.0f, 0.8f, 1.0f) );
 			//DrawLineStrip(points.data(), (int)points.size(), matrix44::kIdentity, float4::k1111);
+
+			//DrawPoints(cellBoundary.points.data(), (uint32_t)cellBoundary.points.size(), matrix44::kIdentity, float4(0.5f, 0.5f, 0.5f, 1));
 			DrawPoints(cellBoundary.tubePoints.data(), (uint32_t)cellBoundary.tubePoints.size(), matrix44::kIdentity, float4(1,1,1,1));
 			//DrawPoints(&cellBoundary.p0, 1, matrix44::kIdentity, float4(1,0,0,1));
 			//DrawPoints(&cellBoundary.p1, 1, matrix44::kIdentity, float4(1,0,0,1));
@@ -648,14 +695,16 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 		
 		ImGui::SliderInt("Points per triangle", &g_pointsPerTriangle, 1, 100);
 		ImGui::Checkbox("Stratified Points", &g_stratifiedPoints);
-		ImGui::SliderFloat("Min Point Distance Factor", &g_minPointDistanceFactor, 0, 5);
-		ImGui::SliderInt("Tube Segments", &g_tubeSegments, 1, 30);
+		ImGui::SliderFloat("Cell Radius", &g_cellRadius, 0, 20);
+		ImGui::SliderInt("Tube Segments", &g_tubeSegmentCount, 1, 30);
+		ImGui::SliderInt("Tube Angle Count", &g_tubeAngleCount, 1, 32);
+		ImGui::SliderFloat("Tube Radius", &g_tubeRadius, 0, 5);
 
 		ImGui::Checkbox("Show Control Points", &g_showControlPoints);
 
 		if (ImGui::Button("Generate Points"))
 		{
-			GeneratePointCloud(g_points, g_minDistance);
+			GeneratePointCloud(g_points);
 		}
 
 		ImGui::Text("Hover Vertex: %u", GetHoverVertexIndex());
@@ -675,7 +724,7 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 		g_maxCellBoundaryIndex = std::max(g_maxCellBoundaryIndex-10, -1);
 
 	if (ImGui::IsKeyPressed(ImGuiKey_F5))
-		GeneratePointCloud(g_points, g_minDistance);
+		GeneratePointCloud(g_points);
 }
 
 void AppExit()
