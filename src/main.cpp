@@ -13,10 +13,12 @@ float								g_avgTriangleArea = 0;
 float								g_printbedSize = 210;
 
 int									g_pointsPerTriangle = 20;
-bool								g_stratifiedPoints = false;
+bool								g_stratifiedPoints = 1;
+bool								g_irrationalPoints = 1;
 std::vector<float3>					g_points;
 std::vector<float3>					g_controlPoints;
 std::vector<uint32_t>				g_triangleIndices;
+float								g_processingTime = 0;
 
 float								g_cellRadius = 5;
 int									g_tubeSegmentCount = 20;
@@ -24,7 +26,12 @@ int									g_tubeAngleCount = 16;
 float								g_tubeRadius = 0.5;
 
 int									g_maxCellBoundaryIndex = -1;
+bool								g_showJustOne = false;
 bool								g_showControlPoints = false;
+bool								g_showPoints = false;
+bool								g_showCellsAxes = false;
+bool								g_showCellsPoints = false;
+bool								g_showCellsTubes = false;
 
 float TriangleArea(const float3& v0, const float3& v1, const float3& v2)
 {
@@ -138,7 +145,32 @@ float3 RandomPointInTriangle(const float3& v0, const float3& v1, const float3& v
 	float u = dist(gen);
 	float v = dist(gen);
 
-	if (g_stratifiedPoints)
+	if (g_irrationalPoints)
+	{
+		//const float goldenRatio = (1 + sqrtf(5.0f)) / 2.0f;
+
+		//// Fibonacci Spiral
+		//float phi = (float)M_PI * 2.0f * i / goldenRatio;
+		//float r = sqrtf((float)i / (float)iMax);
+		//	
+		//u = cosf(phi) * r * 0.5f + 0.5f;
+		//v = sinf(phi) * r * 0.5f + 0.5f;
+
+		auto radicalInverse = [](uint32_t bits) -> float
+		{
+			bits = (bits << 16) | (bits >> 16);
+			bits = ((bits & 0x55555555) << 1) | ((bits & 0xAAAAAAAA) >> 1);
+			bits = ((bits & 0x33333333) << 2) | ((bits & 0xCCCCCCCC) >> 2);
+			bits = ((bits & 0x0F0F0F0F) << 4) | ((bits & 0xF0F0F0F0) >> 4);
+			bits = ((bits & 0x00FF00FF) << 8) | ((bits & 0xFF00FF00) >> 8);
+
+			return (float)(bits) * (float)2.3283064365386963e-10; // / 0x100000000
+		};
+
+		u = (float)i / (float)iMax;
+		v = radicalInverse(i);
+	}
+	else if (g_stratifiedPoints)
 	{
 		uint32_t iMaxX = std::max(1u, (uint32_t)sqrtf((float)iMax));
 	
@@ -281,248 +313,326 @@ struct CellBoundary
 {
 	float3 p0;
 	float3 p1;
+	float3 x,y,z;
+	float3 size;
+	float3 center;
 	std::vector<float3> points;
 	std::vector<float3> tubePoints;
+	std::vector<uint32_t> tubeIndices;
 };
 
-std::unordered_map<uint64_t, CellBoundary> g_cellBoundaries;
+std::vector<CellBoundary> g_cellBoundaries;
+std::unordered_map<uint64_t, uint32_t> g_cellBoundariesMap;
 
 uint64_t EdgeHash(uint32_t i0, uint32_t i1)
 {
 	return ((uint64_t)std::min(i0,i1) << 32) | ((uint64_t)std::max(i0,i1));
 }
 
-void GeneratePointCloud(std::vector<float3>& points)
+void GeneratePointCloud()
 {
-	points.clear();
-	g_cellBoundaries.clear();
-
-	for (const tinyobj::shape_t& shape : g_obj_shapes)
-	{
-		for (size_t i = 0; i < shape.mesh.indices.size(); i += 3)
-		{
-			tinyobj::index_t idx0 = shape.mesh.indices[i];
-			tinyobj::index_t idx1 = shape.mesh.indices[i + 1];
-			tinyobj::index_t idx2 = shape.mesh.indices[i + 2];
-
-			float3 v0 = float3(g_obj_attrib.vertices[3 * idx0.vertex_index], g_obj_attrib.vertices[3 * idx0.vertex_index + 1], g_obj_attrib.vertices[3 * idx0.vertex_index + 2]);
-			float3 v1 = float3(g_obj_attrib.vertices[3 * idx1.vertex_index], g_obj_attrib.vertices[3 * idx1.vertex_index + 1], g_obj_attrib.vertices[3 * idx1.vertex_index + 2]);
-			float3 v2 = float3(g_obj_attrib.vertices[3 * idx2.vertex_index], g_obj_attrib.vertices[3 * idx2.vertex_index + 1], g_obj_attrib.vertices[3 * idx2.vertex_index + 2]);
-
-			float area = TriangleArea(v0, v1, v2);
-			
-			int numSamples = static_cast<int>(g_pointsPerTriangle * area / g_avgTriangleArea);
-
-			for (int j = 0; j < numSamples; ++j)
-			{
-				points.push_back(RandomPointInTriangle(v0, v1, v2, j, numSamples));
-			}
-		}
-	}
-
-	std::vector<float3> controlPoints;
-	std::vector<float3> reducedPoints;
-
-	for (const float3& p : points)
-	{
-		bool keep = true;
-
-		for (const float3& q : controlPoints) 
-		{
-			if (distance(p, q) < g_cellRadius) 
-			{
-				keep = false;
-				break;
-			}
-		}
-
-		if (keep)
-			controlPoints.push_back(p);
-		else
-			reducedPoints.push_back(p);
-	}
-
-	points = reducedPoints;
-	g_controlPoints = controlPoints;
-
-	//for (int k=0; k!=g_simulationIterationCount; ++k)
-	for (int i=0; i!=points.size(); ++i)
-	{
-		float3& p = points[i];
-
-		float3 p0, p1;
-		uint64_t edgeHash;
-
-		// Find two closest points
-		{
-			uint32_t bestIndex0 = UINT32_MAX;
-			uint32_t bestIndex1 = UINT32_MAX;
-			float bestDistance0 = FLT_MAX;
-			float bestDistance1 = FLT_MAX;
-
-			for (int j=0; j!=controlPoints.size(); ++j)
-			{
-				float d = distance(controlPoints[j], p);
-
-				if (d < g_cellRadius * 0.001f)
-					continue;
-
-				if (d <= bestDistance0)
-				{
-					bestIndex1 = bestIndex0;
-					bestDistance1 = bestDistance0;
-
-					bestIndex0 = j;
-					bestDistance0 = d;
-				}
-				else if (d <= bestDistance1)
-				{
-					bestIndex1 = j;
-					bestDistance1 = d;
-				}
-			}
-
-			assert(bestIndex0 != UINT32_MAX);
-			assert(bestIndex1 != UINT32_MAX);
-			assert(bestIndex0 != bestIndex1);
-
-			p0 = controlPoints[bestIndex0];
-			p1 = controlPoints[bestIndex1];
-			edgeHash = EdgeHash(bestIndex0, bestIndex1);
-		}
-
-		if (fabs(dot(normalize(p0-p1), normalize(p0-p))) >= 0.999f)
-		{
-			p = avg(p0,p1);
-		}
-		else
-		{
-			float3 edgeVec = p1 - p0;
-			float3 edgeDir = normalize(p1 - p0);
-			float3 planeNormal = TriangleNormal(p0, p1, p);
-			float3 tangentDir = normalize( cross( planeNormal, edgeDir ) );
-
-			float v = dot( p - p0, tangentDir );
-
-			p = avg(p0,p1) + tangentDir * v;
-		}
-
-		//assert( fabs(distance(p0, p) - distance(p1,p)) <= 1e-6 );
-
-		CellBoundary& cellBoundary = g_cellBoundaries[edgeHash];
-		cellBoundary.p0 = p0;
-		cellBoundary.p1 = p1;
-		cellBoundary.points.push_back(p);
-	}
+	auto startTime_ns = std::chrono::high_resolution_clock::now();
 	
+	g_cellBoundaries.clear();
+	g_cellBoundariesMap.clear();
+	g_points.clear();
+	g_controlPoints.clear();
+	g_triangleIndices.clear();
 
-	points.clear();
-
-	for (auto itr = g_cellBoundaries.begin(); itr != g_cellBoundaries.end(); ++itr)
+	// Generate point cloud
 	{
-		CellBoundary& cellBoundary = (*itr).second;
-
-		if (cellBoundary.points.size() < 5)
-			continue;
-
-		const float3& p0 = cellBoundary.p0;
-		const float3& p1 = cellBoundary.p1;
-		float3 midP = avg(p0,p1);
-
-		float3 avgN = float3::k000;
-		int count = 0;
-
-		for (const float3& p : cellBoundary.points)
+		for (const tinyobj::shape_t& shape : g_obj_shapes)
 		{
-			if (DistanceToEdge(p0, p1, p) > 0.001f)
+			for (size_t i = 0; i < shape.mesh.indices.size(); i += 3)
 			{
-				avgN += TriangleNormal(p0, p1, p);
-				++count;
-			}
-		}
+				tinyobj::index_t idx0 = shape.mesh.indices[i];
+				tinyobj::index_t idx1 = shape.mesh.indices[i + 1];
+				tinyobj::index_t idx2 = shape.mesh.indices[i + 2];
 
-		if (count == 0)
-			continue;
+				float3 v0 = float3(g_obj_attrib.vertices[3 * idx0.vertex_index], g_obj_attrib.vertices[3 * idx0.vertex_index + 1], g_obj_attrib.vertices[3 * idx0.vertex_index + 2]);
+				float3 v1 = float3(g_obj_attrib.vertices[3 * idx1.vertex_index], g_obj_attrib.vertices[3 * idx1.vertex_index + 1], g_obj_attrib.vertices[3 * idx1.vertex_index + 2]);
+				float3 v2 = float3(g_obj_attrib.vertices[3 * idx2.vertex_index], g_obj_attrib.vertices[3 * idx2.vertex_index + 1], g_obj_attrib.vertices[3 * idx2.vertex_index + 2]);
 
-		avgN = normalize(avgN);
+				float area = TriangleArea(v0, v1, v2);
+			
+				int numSamples = static_cast<int>(g_pointsPerTriangle * area / g_avgTriangleArea);
 
-		float3 edgeZ = normalize(p1 - p0);
-		float3 edgeY = avgN;
-		float3 edgeX = normalize(cross(edgeY, edgeZ));
-
-		float pointsAvgX = 0;
-		float pointsAvgY = 0;
-		float pointsMinX = FLT_MAX;
-		float pointsMinY = FLT_MAX;
-		float pointsMaxX = -FLT_MAX;
-		float pointsMaxY = -FLT_MAX;
-
-		std::vector<float2> points2D;
-
-		for (const float3& p : cellBoundary.points)
-		{
-			float pX = dot(p - p0, edgeX);
-			float pY = dot(p - p0, edgeY);
-			float pZ = dot(p - p0, edgeZ);
-
-			pointsAvgX += pX;
-			pointsAvgY += pY;
-			pointsMinX = std::min(pointsMinX, pX);
-			pointsMinY = std::min(pointsMinY, pY);
-			pointsMaxX = std::max(pointsMaxX, pX);
-			pointsMaxY = std::max(pointsMaxY, pY);
-
-			points2D.push_back(float2(pX, pY));
-		}
-
-		std::sort(points2D.begin(), points2D.end(), [](const float2& a, const float2& b)->int
-		{
-			return a.x < b.x ? -1 : 1;
-		});
-
-		std::vector<float> polynomialFactors = polynomialFit(points2D, std::min((int)points2D.size()-2, 3));
-
-		bool valid = true;
-		for (float c : polynomialFactors)
-		{
-			if (!std::isfinite(c))
-			{
-				valid = false;
-				break;
-			}
-		}
-
-		if (!valid)
-			continue;
-
-		float stepX = (pointsMaxX - pointsMinX) / (float)g_tubeSegmentCount;
-
-		for (int s=0; s != g_tubeSegmentCount; ++s)
-		{
-			float x = pointsMinX + s * stepX;
-			float y = EvaluatePolynomial(polynomialFactors, x);
-			float dy_dx = EvaluatePolynomialSlope(polynomialFactors, x);
-
-			float3 polyZ = normalize( edgeY * dy_dx + edgeX );
-			float3 polyX = edgeZ;
-			float3 polyY = normalize(cross(polyZ, polyX));
-
-			float3 tubeP = midP + edgeX * x + edgeY * y;
-			cellBoundary.tubePoints.push_back(tubeP);
-
-			float angleStep = (float)M_PI * 2.0f / (float)g_tubeAngleCount;
-
-			for (int a=0; a != g_tubeAngleCount; ++a)
-			{
-				float dx = cosf(angleStep * a);
-				float dy = sinf(angleStep * a);
-
-				float3 p = tubeP + polyX * dx  * g_tubeRadius + polyY * dy * g_tubeRadius;
-
-				//cellBoundary.tubePoints.push_back(p);
+				for (int j = 0; j < numSamples; ++j)
+				{
+					g_points.push_back(RandomPointInTriangle(v0, v1, v2, j, numSamples));
+				}
 			}
 		}
 	}
+
+	// Pick out control points and leave the rest as loose particles
+	{
+		std::vector<float3> reducedPoints;
+
+		for (const float3& p : g_points)
+		{
+			bool keep = true;
+
+			for (const float3& q : g_controlPoints) 
+			{
+				if (distance(p, q) < g_cellRadius) 
+				{
+					keep = false;
+					break;
+				}
+			}
+
+			if (keep)
+				g_controlPoints.push_back(p);
+			else
+				reducedPoints.push_back(p);
+		}
+
+		g_points = reducedPoints;
+	}
+
+	// Assign particles to a boundary between its two closest control points
+	{
+		//for (int k=0; k!=g_simulationIterationCount; ++k)
+		for (int i=0; i!=g_points.size(); ++i)
+		{
+			float3 p = g_points[i];
+
+			float3 p0, p1;
+			uint64_t edgeHash;
+
+			// Find two closest points
+			{
+				uint32_t bestIndex0 = UINT32_MAX;
+				uint32_t bestIndex1 = UINT32_MAX;
+				float bestDistance0 = FLT_MAX;
+				float bestDistance1 = FLT_MAX;
+
+				for (int j=0; j!=g_controlPoints.size(); ++j)
+				{
+					float d = distance(g_controlPoints[j], p);
+
+					if (d < g_cellRadius * 0.001f)
+						continue;
+
+					if (d <= bestDistance0)
+					{
+						bestIndex1 = bestIndex0;
+						bestDistance1 = bestDistance0;
+
+						bestIndex0 = j;
+						bestDistance0 = d;
+					}
+					else if (d <= bestDistance1)
+					{
+						bestIndex1 = j;
+						bestDistance1 = d;
+					}
+				}
+
+				assert(bestIndex0 != UINT32_MAX);
+				assert(bestIndex1 != UINT32_MAX);
+				assert(bestIndex0 != bestIndex1);
+
+				p0 = g_controlPoints[bestIndex0];
+				p1 = g_controlPoints[bestIndex1];
+				edgeHash = EdgeHash(bestIndex0, bestIndex1);
+			}
+
+			if (fabs(dot(normalize(p0-p1), normalize(p0-p))) >= 0.999f)
+			{
+				p = avg(p0,p1);
+			}
+			else
+			{
+				float3 edgeVec = p1 - p0;
+				float3 edgeDir = normalize(p1 - p0);
+				float3 planeNormal = TriangleNormal(p0, p1, p);
+				float3 tangentDir = normalize( cross( planeNormal, edgeDir ) );
+
+				float v = dot( p - p0, tangentDir );
+
+				p = avg(p0,p1) + tangentDir * v;
+			}
+
+			if (g_cellBoundariesMap.find(edgeHash) == g_cellBoundariesMap.end())
+			{
+				g_cellBoundariesMap[edgeHash] = (uint32_t)g_cellBoundaries.size();
+				g_cellBoundaries.push_back(CellBoundary());
+			}
+
+			CellBoundary& cellBoundary = g_cellBoundaries[ g_cellBoundariesMap[edgeHash] ];
+			cellBoundary.p0 = p0;
+			cellBoundary.p1 = p1;
+			cellBoundary.points.push_back(p);
+		}
+	}
+
+	// Approximate cell boundaries using polynomials and build tube geometry
+	{
+		for (int b=0; b != (int)g_cellBoundaries.size(); ++b)
+		{
+			CellBoundary& cellBoundary = g_cellBoundaries[b];
+
+			const float3& p0 = cellBoundary.p0;
+			const float3& p1 = cellBoundary.p1;
+			float3 midP = avg(p0,p1);
+
+			float3 avgN = float3::k000;
+			int count = 0;
+
+			for (const float3& p : cellBoundary.points)
+			{
+				if (DistanceToEdge(p0, p1, p) > 0.001f)
+				{
+					avgN += TriangleNormal(p0, p1, p);
+					++count;
+				}
+			}
+
+			if (count == 0)
+				continue;
+
+			avgN = normalize(avgN);
+
+			float3 edgeZ = normalize(p1 - p0);
+			float3 edgeY = avgN;
+			float3 edgeX = normalize(cross(edgeY, edgeZ));
+
+			cellBoundary.x = edgeX;
+			cellBoundary.y = edgeY;
+			cellBoundary.z = edgeZ;
+
+			float pointsAvgX = 0;
+			float pointsAvgY = 0;
+			float pointsMinX = FLT_MAX;
+			float pointsMinY = FLT_MAX;
+			float pointsMaxX = -FLT_MAX;
+			float pointsMaxY = -FLT_MAX;
+
+			std::vector<float2> points2D;
+
+			for (const float3& p : cellBoundary.points)
+			{
+				float pX = dot(p - p0, edgeX);
+				float pY = dot(p - p0, edgeY);
+				float pZ = dot(p - p0, edgeZ);
+
+				pointsAvgX += pX;
+				pointsAvgY += pY;
+				pointsMinX = std::min(pointsMinX, pX);
+				pointsMinY = std::min(pointsMinY, pY);
+				pointsMaxX = std::max(pointsMaxX, pX);
+				pointsMaxY = std::max(pointsMaxY, pY);
+
+				points2D.push_back(float2(pX, pY));
+			}
+
+			cellBoundary.size.x = pointsMaxX - pointsMinX;
+			cellBoundary.size.y = pointsMaxY - pointsMinY;
+			cellBoundary.size.z = distance(p0, p1);
+
+			cellBoundary.center.x = (pointsMaxX + pointsMinX) * 0.5f;
+			cellBoundary.center.y = (pointsMaxY + pointsMinY) * 0.5f;
+			cellBoundary.center.z = 0.5f * distance(p0, p1);
+
+			if (cellBoundary.size.x < cellBoundary.size.y)
+			{
+				std::swap(pointsMinX, pointsMinY);
+				std::swap(pointsMaxX, pointsMaxY);
+				std::swap(cellBoundary.size.x, cellBoundary.size.y);
+				std::swap(cellBoundary.center.x, cellBoundary.center.y);
+				std::swap(cellBoundary.x, cellBoundary.y);
+				std::swap(edgeX, edgeY);
+
+				for (float2& p : points2D)
+				{
+					std::swap(p.x, p.y);
+				}
+			}
+
+			std::sort(points2D.begin(), points2D.end(), [](const float2& a, const float2& b)->int
+			{
+				return a.x < b.x ? -1 : 1;
+			});
+
+			float aspectRatio = std::max(cellBoundary.size.x, cellBoundary.size.y) / std::min(cellBoundary.size.x, cellBoundary.size.y);
+
+			int polynomialDegree = aspectRatio < 1.3f ? 5 : 1;
+
+			std::vector<float> polynomialFactors = polynomialFit(points2D, std::max(1, std::min((int)points2D.size()-2, polynomialDegree)));
+
+			bool valid = true;
+			for (float c : polynomialFactors)
+			{
+				if (!std::isfinite(c))
+				{
+					valid = false;
+					break;
+				}
+			}
+
+			if (!valid)
+				continue;
+
+			float stepX = (pointsMaxX - pointsMinX) / (float)g_tubeSegmentCount;
+
+			for (int s=0; s != g_tubeSegmentCount; ++s)
+			{
+				float x = pointsMinX + s * stepX;
+				float y = EvaluatePolynomial(polynomialFactors, x);
+				float dy_dx = EvaluatePolynomialSlope(polynomialFactors, x);
+
+				float3 polyZ = normalize( edgeY * dy_dx + edgeX );
+				float3 polyX = edgeZ;
+				float3 polyY = normalize(cross(polyZ, polyX));
+
+				float3 tubeP = midP + edgeX * x + edgeY * y;
+				cellBoundary.tubePoints.push_back(tubeP);
+
+				float angleStep = (float)M_PI * 2.0f / (float)g_tubeAngleCount;
+
+				for (int a=0; a != g_tubeAngleCount; ++a)
+				{
+					float dx = cosf(angleStep * a);
+					float dy = sinf(angleStep * a);
+
+					float3 p = tubeP + polyX * dx  * g_tubeRadius + polyY * dy * g_tubeRadius;
+
+					//cellBoundary.tubePoints.push_back(p);
+
+					if (s>0)
+					{
+						if (a==0)
+						{
+							cellBoundary.tubeIndices.push_back( (s - 1) * g_tubeAngleCount + g_tubeAngleCount - 1 );
+							cellBoundary.tubeIndices.push_back( (s - 0) * g_tubeAngleCount + g_tubeAngleCount - 1 );
+							cellBoundary.tubeIndices.push_back( (s - 1) * g_tubeAngleCount + a - 0 );
+							cellBoundary.tubeIndices.push_back( (s - 1) * g_tubeAngleCount + a - 0 );
+							cellBoundary.tubeIndices.push_back( (s - 0) * g_tubeAngleCount + g_tubeAngleCount - 1 );
+							cellBoundary.tubeIndices.push_back( (s - 0) * g_tubeAngleCount + a - 0 );
+						}
+						else
+						{
+							cellBoundary.tubeIndices.push_back( (s - 1) * g_tubeAngleCount + a - 1 );
+							cellBoundary.tubeIndices.push_back( (s - 0) * g_tubeAngleCount + a - 1 );
+							cellBoundary.tubeIndices.push_back( (s - 1) * g_tubeAngleCount + a - 0 );
+							cellBoundary.tubeIndices.push_back( (s - 1) * g_tubeAngleCount + a - 0 );
+							cellBoundary.tubeIndices.push_back( (s - 0) * g_tubeAngleCount + a - 1 );
+							cellBoundary.tubeIndices.push_back( (s - 0) * g_tubeAngleCount + a - 0 );
+						}
+					}
+				}
+			}
+		
+			if (b == 2025)
+				printf("");
+		}
+	}
+
+	auto endTime_ns = std::chrono::high_resolution_clock::now();
+	std::chrono::nanoseconds duration_ns = endTime_ns - startTime_ns;
+	g_processingTime = duration_ns.count() / 1e9f;
 }
 
 void SavePointCloud(const std::string& filename, const std::vector<float3>& points)
@@ -585,7 +695,7 @@ void AppInit(const std::vector<std::string>& args)
 	g_cameraController.SetViewDirection(float4::k0010);
 	g_cameraController.SetViewDistance(length(g_modelSize) * 2.0f);
 
-	GeneratePointCloud(g_points);
+	GeneratePointCloud();
 }
 
 void AppResize(uint32_t windowWidth, uint32_t windowHeight)
@@ -641,32 +751,54 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 		DrawLineStrip(printbedVerts, 5, matrix44::kIdentity, float4(1,0,0,1));
 	}
 
-	//DrawMesh(g_points.data(), (uint32_t)g_points.size(), g_triangleIndices.data(), g_maxTriangleIndex>=0 ? g_maxTriangleIndex*3 : (uint32_t)g_triangleIndices.size(), matrix44::kIdentity, float4::k1111, float4::k1001);
-	DrawPoints(g_points.data(), (uint32_t)g_points.size(), matrix44::kIdentity, float4(1,1,1,1));
-	
 	{
 		int count = 0;
 
-		for (auto itr = g_cellBoundaries.begin(); itr != g_cellBoundaries.end(); ++itr)
+		for (CellBoundary& cellBoundary : g_cellBoundaries)
 		{
-			CellBoundary& cellBoundary = (*itr).second;
-
-			if (g_maxCellBoundaryIndex>=0 && count != g_maxCellBoundaryIndex)
+			if (g_showJustOne && g_maxCellBoundaryIndex>=0 && count != g_maxCellBoundaryIndex)
 			{
 				++count;
 				continue;
 			}
+			else if (g_maxCellBoundaryIndex>=0 && count > g_maxCellBoundaryIndex)
+			{
+				break;
+			}
 
-			std::vector<float3> points = cellBoundary.tubePoints;
-			points.insert(points.begin(), cellBoundary.p0);
-			points.push_back(cellBoundary.p1);
-			//DrawLineStrip(points.data(), (int)points.size(), matrix44::kIdentity, count%2 ? float4(0.8f, 0.8f, 1.0f, 1.0f) : float4(0.8f, 1.0f, 0.8f, 1.0f) );
-			//DrawLineStrip(points.data(), (int)points.size(), matrix44::kIdentity, float4::k1111);
+			if (g_showCellsPoints)
+				DrawPoints(cellBoundary.points.data(), (uint32_t)cellBoundary.points.size(), matrix44::kIdentity, float4::k1111 * 0.8f);
 
-			//DrawPoints(cellBoundary.points.data(), (uint32_t)cellBoundary.points.size(), matrix44::kIdentity, float4(0.5f, 0.5f, 0.5f, 1));
-			DrawPoints(cellBoundary.tubePoints.data(), (uint32_t)cellBoundary.tubePoints.size(), matrix44::kIdentity, float4(1,1,1,1));
+			if (g_showCellsTubes)
+				DrawLineStrip(cellBoundary.tubePoints.data(), (int)cellBoundary.tubePoints.size(), matrix44::kIdentity, float4(235, 137, 52, 255)/255.0f);
+
+			//DrawPoints(cellBoundary.tubePoints.data(), (uint32_t)cellBoundary.tubePoints.size(), matrix44::kIdentity, float4(1,1,1,1));
+
+			//DrawMesh(cellBoundary.tubePoints.data(), (uint32_t)cellBoundary.tubePoints.size(), cellBoundary.tubeIndices.data(), (uint32_t)cellBoundary.tubeIndices.size(), matrix44::kIdentity, float4(235, 137, 52, 255)/255.0f);
+
 			//DrawPoints(&cellBoundary.p0, 1, matrix44::kIdentity, float4(1,0,0,1));
 			//DrawPoints(&cellBoundary.p1, 1, matrix44::kIdentity, float4(1,0,0,1));
+			
+			if (g_showCellsAxes)
+			{
+				float3 m = avg(cellBoundary.p0, cellBoundary.p1);
+
+				float3 axisPoints[] = 
+				{
+					cellBoundary.p0 + cellBoundary.x * (cellBoundary.center.x - cellBoundary.size.x * 0.5f) + cellBoundary.y * cellBoundary.center.y + cellBoundary.z * cellBoundary.center.z,
+					cellBoundary.p0 + cellBoundary.x * (cellBoundary.center.x + cellBoundary.size.x * 0.5f) + cellBoundary.y * cellBoundary.center.y + cellBoundary.z * cellBoundary.center.z, 
+
+					cellBoundary.p0 + cellBoundary.y * (cellBoundary.center.y - cellBoundary.size.y * 0.5f) + cellBoundary.x * cellBoundary.center.x + cellBoundary.z * cellBoundary.center.z,
+					cellBoundary.p0 + cellBoundary.y * (cellBoundary.center.y + cellBoundary.size.y * 0.5f) + cellBoundary.x * cellBoundary.center.x + cellBoundary.z * cellBoundary.center.z, 
+
+					cellBoundary.p0 + cellBoundary.z * (cellBoundary.center.z - cellBoundary.size.z * 0.5f) + cellBoundary.x * cellBoundary.center.x + cellBoundary.y * cellBoundary.center.y,
+					cellBoundary.p0 + cellBoundary.z * (cellBoundary.center.z + cellBoundary.size.z * 0.5f) + cellBoundary.x * cellBoundary.center.x + cellBoundary.y * cellBoundary.center.y, 
+				};
+
+				DrawLines(axisPoints + 0, 2, matrix44::kIdentity, float4(1.0f, 0.2f, 0.2f, 1));
+				DrawLines(axisPoints + 2, 2, matrix44::kIdentity, float4(0.2f, 1.0f, 0.2f, 1));
+				DrawLines(axisPoints + 4, 2, matrix44::kIdentity, float4(0.1f, 0.2f, 1.0f, 1));
+			}
 
 			++count;
 		}
@@ -675,38 +807,73 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 	if (g_showControlPoints)
 		DrawPoints(g_controlPoints.data(), (uint32_t)g_controlPoints.size(), matrix44::kIdentity, float4(1,0,0,1));
 
-	ImGui::SetNextWindowSize(ImVec2(550, 400));
+	if (g_showPoints)
+	{
+		//DrawMesh(g_points.data(), (uint32_t)g_points.size(), g_triangleIndices.data(), g_maxTriangleIndex>=0 ? g_maxTriangleIndex*3 : (uint32_t)g_triangleIndices.size(), matrix44::kIdentity, float4::k1111, float4::k1001);
+		DrawPoints(g_points.data(), (uint32_t)g_points.size(), matrix44::kIdentity, float4(1,1,1,1));
+	}
+
+	ImGui::SetNextWindowSize(ImVec2(550, 450));
 	ImGui::Begin("Controls");
 	{
-		ImGui::SliderInt("Cell Boundaries", &g_maxCellBoundaryIndex, -1, std::min(2000u, (uint32_t)g_cellBoundaries.size()));
-
-		ImGui::SameLine();
-		if (ImGui::Button("-"))
+		if (ImGui::Button("Load Model"))
 		{
-			g_maxCellBoundaryIndex = std::max(g_maxCellBoundaryIndex-1, -1);
+			OPENFILENAME ofn;
+			char szFile[260] = { 0 };
+
+			ZeroMemory(&ofn, sizeof(ofn));
+			ofn.lStructSize = sizeof(ofn);
+			//ofn.hwndOwner = hwnd;
+			ofn.lpstrFile = szFile;
+			ofn.nMaxFile = sizeof(szFile);
+			ofn.lpstrFilter = "*.OBJ\0*.obj\0";
+			ofn.nFilterIndex = 0;
+			ofn.lpstrFileTitle = NULL;
+			ofn.nMaxFileTitle = 0;
+			ofn.lpstrInitialDir = NULL;
+			ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+			if (GetOpenFileName(&ofn) == TRUE) 
+			{
+				LoadModel(ofn.lpstrFile);
+				GeneratePointCloud();
+			}
 		}
 
+		ImGui::SliderInt("Cell Boundaries", &g_maxCellBoundaryIndex, -1, (uint32_t)g_cellBoundaries.size());
 		ImGui::SameLine();
-		if (ImGui::Button("+"))
-		{
-			g_maxCellBoundaryIndex = std::min(g_maxCellBoundaryIndex+1, (int)g_cellBoundaries.size());
-		}
-
+		ImGui::Checkbox("Just one", &g_showJustOne);
 		
 		ImGui::SliderInt("Points per triangle", &g_pointsPerTriangle, 1, 100);
 		ImGui::Checkbox("Stratified Points", &g_stratifiedPoints);
+		ImGui::Checkbox("Irrational Points", &g_irrationalPoints);
 		ImGui::SliderFloat("Cell Radius", &g_cellRadius, 0, 20);
 		ImGui::SliderInt("Tube Segments", &g_tubeSegmentCount, 1, 30);
 		ImGui::SliderInt("Tube Angle Count", &g_tubeAngleCount, 1, 32);
 		ImGui::SliderFloat("Tube Radius", &g_tubeRadius, 0, 5);
 
 		ImGui::Checkbox("Show Control Points", &g_showControlPoints);
+		ImGui::Checkbox("Show Points", &g_showPoints);
+		ImGui::Checkbox("Show Cell Axes", &g_showCellsAxes);
+		ImGui::Checkbox("Show Cell Points", &g_showCellsPoints);
+		ImGui::Checkbox("Show Cell Tubes", &g_showCellsTubes);
 
 		if (ImGui::Button("Generate Points"))
 		{
-			GeneratePointCloud(g_points);
+			GeneratePointCloud();
 		}
 
+		if (ImGui::Button("Teleport") || ImGui::IsKeyPressed(ImGuiKey_F))
+		{
+			int index = std::min(g_maxCellBoundaryIndex, (int)g_cellBoundaries.size());
+
+			CellBoundary& cellBoundary = g_cellBoundaries[index];
+
+			g_cameraController.SetTarget( float4(cellBoundary.p0 + cellBoundary.z * cellBoundary.center.z + cellBoundary.x * cellBoundary.center.x + cellBoundary.y * cellBoundary.center.y, 1) );
+		}
+
+		ImGui::Text("Processing took: %3.2fs", g_processingTime);
+		ImGui::Text("Cell Boundaries: %d", g_cellBoundaries.size());
 		ImGui::Text("Hover Vertex: %u", GetHoverVertexIndex());
 	}
 	ImGui::End();
@@ -724,7 +891,7 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 		g_maxCellBoundaryIndex = std::max(g_maxCellBoundaryIndex-10, -1);
 
 	if (ImGui::IsKeyPressed(ImGuiKey_F5))
-		GeneratePointCloud(g_points);
+		GeneratePointCloud();
 }
 
 void AppExit()

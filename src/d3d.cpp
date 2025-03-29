@@ -55,7 +55,7 @@ ID3D12Resource*					g_cbCamera;
 ID3D12Resource*					g_sbModelInstance;
 bool							g_insideAppRender = false;
 const uint32_t					g_maxVertexCount = 2*1024*1024;
-const uint32_t					g_maxIndexCount = 2*1024*1024;
+const uint32_t					g_maxIndexCount = 32*1024*1024;
 const uint32_t					g_maxModelInstanceCount = 256*1024;
 uint32_t						g_currentVertexCount = 0;
 uint32_t						g_currentIndexCount = 0;
@@ -1182,7 +1182,9 @@ void RenderD3D(uint32_t windowWidth, uint32_t windowHeight, const float2& mouseP
 				float3(0,0,-1), float3(0,0,1),
 			};
 
-			DrawLines(axisPoints, 6, matrix44::MakeTranslation(g_cameraController.GetTarget().xyz), float4(0.5f, 0.5f, 0.5f, 1));
+			DrawLines(axisPoints + 0, 2, matrix44::MakeTranslation(g_cameraController.GetTarget().xyz), float4(1.0f, 0.2f, 0.2f, 1));
+			DrawLines(axisPoints + 2, 2, matrix44::MakeTranslation(g_cameraController.GetTarget().xyz), float4(0.2f, 1.0f, 0.2f, 1));
+			DrawLines(axisPoints + 4, 2, matrix44::MakeTranslation(g_cameraController.GetTarget().xyz), float4(0.1f, 0.2f, 1.0f, 1));
 		}
 
 		// Download feedback buffer

@@ -249,7 +249,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 	WNDCLASS wc = {};
 	wc.lpfnWndProc		= WndProc;
 	wc.hInstance		= g_hInst;
-	wc.lpszClassName	= L"obj2mesh";
+	wc.lpszClassName	= "obj2mesh";
 	wc.hbrBackground	= (HBRUSH)GetStockObject(DKGRAY_BRUSH);
 	wc.hCursor			= LoadCursor(NULL, IDC_ARROW);
 	RegisterClass(&wc);
@@ -257,8 +257,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 	RECT windowRect = {0, 0, 1280, 720};
 	AdjustWindowRect(&windowRect, WS_OVERLAPPEDWINDOW, FALSE); // WS_OVERLAPPEDWINDOW includes title bar and borders
 
-	g_hWND = CreateWindow(	L"obj2mesh", 
-							L"obj2mesh", 
+	g_hWND = CreateWindow(	"obj2mesh", 
+							"obj2mesh", 
 							WS_OVERLAPPEDWINDOW,
 							CW_USEDEFAULT, CW_USEDEFAULT, 
 							windowRect.right - windowRect.left,
@@ -349,6 +349,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 		{
 			g_cameraController.ProcessInput(g_inputCollector);
 		}
+
+		g_cameraController.UpdateViewMatrix();
 
 		RenderD3D(g_windowWidth, g_windowHeight, g_inputCollector.GetMousePos());
 	}

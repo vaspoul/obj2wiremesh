@@ -59,7 +59,7 @@ project("obj2mesh")
 	kind("WindowedApp")
 	language("C++")
 	cppdialect("C++17")
-	characterset("Unicode")
+	characterset("ASCII")
 	
 	links({"d3d12.lib", "dxgi.lib", "d3dcompiler.lib", "xinput.lib"})
 

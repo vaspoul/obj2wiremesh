@@ -29,8 +29,7 @@ public:
 	void				SetProjectionMtx(const matrix44& projMtx);
 	const float4x4&		GetProjectionMtx() const;
 
-private:
-	void UpdateViewMatrix();
+	void				UpdateViewMatrix();
 
 private:
 	float4		m_lookTarget;

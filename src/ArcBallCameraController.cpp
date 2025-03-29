@@ -188,7 +188,6 @@ bool ArcBallCameraController::ProcessInput(const InputCollector& inputState)
 	if (m_dirty)
 	{
 		UpdateViewMatrix();
-		m_dirty = false;
 	}
 
 	return false;
@@ -196,8 +195,12 @@ bool ArcBallCameraController::ProcessInput(const InputCollector& inputState)
 
 void ArcBallCameraController::UpdateViewMatrix()
 {
-	m_viewPosition = m_lookTarget - m_viewDirection * m_targetDistance;
-	m_viewMatrix.LookAlong(m_viewPosition, m_viewDirection, m_viewUp);
+	if (m_dirty)
+	{
+		m_viewPosition = m_lookTarget - m_viewDirection * m_targetDistance;
+		m_viewMatrix.LookAlong(m_viewPosition, m_viewDirection, m_viewUp);
+		m_dirty = false;
+	}
 }
 
 void ArcBallCameraController::SetViewDistance(float distance)
