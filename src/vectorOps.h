@@ -1300,3 +1300,29 @@ inline float DistanceToEdge(const float3& p0, const float3& p1, const float3& p)
 
 	return distance(p, closestPoint);
 }
+
+inline float3 Intersect3Planes(const float4& plane1, const float4& plane2, const float4& plane3) 
+{
+	float a1 = plane1.x, b1 = plane1.y, c1 = plane1.z, d1 = plane1.w;
+	float a2 = plane2.x, b2 = plane2.y, c2 = plane2.z, d2 = plane2.w;
+	float a3 = plane3.x, b3 = plane3.y, c3 = plane3.z, d3 = plane3.w;
+
+	// Compute determinant of A
+	float det = a1 * (b2 * c3 - b3 * c2) - b1 * (a2 * c3 - a3 * c2) + c1 * (a2 * b3 - a3 * b2);
+
+	if (det == 0.0f) 
+	{
+		// No unique intersection
+		return float3::kFloatMax;
+	}
+
+	float rcpDet = 1.0f / det;
+
+	float detX = (-d1 * (b2 * c3 - b3 * c2)) - (b1 * (-d2 * c3 + d3 * c2)) + (c1 * (-d2 * b3 + d3 * b2));
+	float detY = (a1 * (-d2 * c3 + d3 * c2)) - (-d1 * (a2 * c3 - a3 * c2)) + (c1 * (a2 * -d3 + a3 * d2));
+	float detZ = (a1 * (b2 * -d3 + b3 * d2)) - (b1 * (a2 * -d3 + a3 * d2)) + (-d1 * (a2 * b3 - a3 * b2));
+
+	float3 intersection = float3(detX * rcpDet, detY * rcpDet, detZ * rcpDet);
+
+	return intersection;
+}

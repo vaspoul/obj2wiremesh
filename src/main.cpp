@@ -311,30 +311,33 @@ bool LoadModel(const std::string& filename)
 }
 struct CellBoundary
 {
+	int i0;
+	int i1;
 	float3 p0;
 	float3 p1;
 	float3 x,y,z;
 	float3 size;
 	float3 center;
 	std::vector<float3> points;
+	std::vector<float3>	boundaryPoints;
 	std::vector<float3> tubePoints;
 	std::vector<uint32_t> tubeIndices;
 };
 
 std::vector<CellBoundary> g_cellBoundaries;
-std::unordered_map<uint64_t, uint32_t> g_cellBoundariesMap;
+std::unordered_map<uint64_t, uint32_t> g_cellBoundaryFromHash;	// hash to g_cellBoundaries index
 
 uint64_t EdgeHash(uint32_t i0, uint32_t i1)
 {
 	return ((uint64_t)std::min(i0,i1) << 32) | ((uint64_t)std::max(i0,i1));
 }
 
-void GeneratePointCloud()
+void GeneratePointCloudOld()
 {
 	auto startTime_ns = std::chrono::high_resolution_clock::now();
 	
 	g_cellBoundaries.clear();
-	g_cellBoundariesMap.clear();
+	g_cellBoundaryFromHash.clear();
 	g_points.clear();
 	g_controlPoints.clear();
 	g_triangleIndices.clear();
@@ -455,13 +458,13 @@ void GeneratePointCloud()
 				p = avg(p0,p1) + tangentDir * v;
 			}
 
-			if (g_cellBoundariesMap.find(edgeHash) == g_cellBoundariesMap.end())
+			if (g_cellBoundaryFromHash.find(edgeHash) == g_cellBoundaryFromHash.end())
 			{
-				g_cellBoundariesMap[edgeHash] = (uint32_t)g_cellBoundaries.size();
+				g_cellBoundaryFromHash[edgeHash] = (uint32_t)g_cellBoundaries.size();
 				g_cellBoundaries.push_back(CellBoundary());
 			}
 
-			CellBoundary& cellBoundary = g_cellBoundaries[ g_cellBoundariesMap[edgeHash] ];
+			CellBoundary& cellBoundary = g_cellBoundaries[ g_cellBoundaryFromHash[edgeHash] ];
 			cellBoundary.p0 = p0;
 			cellBoundary.p1 = p1;
 			cellBoundary.points.push_back(p);
@@ -635,6 +638,173 @@ void GeneratePointCloud()
 	g_processingTime = duration_ns.count() / 1e9f;
 }
 
+void GeneratePointCloud()
+{
+	auto startTime_ns = std::chrono::high_resolution_clock::now();
+	
+	g_cellBoundaries.clear();
+	g_cellBoundaryFromHash.clear();
+	g_points.clear();
+	g_controlPoints.clear();
+	g_triangleIndices.clear();
+
+	// Generate point cloud
+	{
+		for (const tinyobj::shape_t& shape : g_obj_shapes)
+		{
+			for (size_t i = 0; i < shape.mesh.indices.size(); i += 3)
+			{
+				tinyobj::index_t idx0 = shape.mesh.indices[i];
+				tinyobj::index_t idx1 = shape.mesh.indices[i + 1];
+				tinyobj::index_t idx2 = shape.mesh.indices[i + 2];
+
+				float3 v0 = float3(g_obj_attrib.vertices[3 * idx0.vertex_index], g_obj_attrib.vertices[3 * idx0.vertex_index + 1], g_obj_attrib.vertices[3 * idx0.vertex_index + 2]);
+				float3 v1 = float3(g_obj_attrib.vertices[3 * idx1.vertex_index], g_obj_attrib.vertices[3 * idx1.vertex_index + 1], g_obj_attrib.vertices[3 * idx1.vertex_index + 2]);
+				float3 v2 = float3(g_obj_attrib.vertices[3 * idx2.vertex_index], g_obj_attrib.vertices[3 * idx2.vertex_index + 1], g_obj_attrib.vertices[3 * idx2.vertex_index + 2]);
+
+				float area = TriangleArea(v0, v1, v2);
+			
+				int numSamples = static_cast<int>(g_pointsPerTriangle * area / g_avgTriangleArea);
+
+				for (int j = 0; j < numSamples; ++j)
+				{
+					g_points.push_back(RandomPointInTriangle(v0, v1, v2, j, numSamples));
+				}
+			}
+		}
+	}
+
+	// Pick out control points
+	{
+		for (const float3& p : g_points)
+		{
+			bool keep = true;
+
+			for (const float3& q : g_controlPoints) 
+			{
+				if (distance(p, q) < g_cellRadius) 
+				{
+					keep = false;
+					break;
+				}
+			}
+
+			if (keep)
+				g_controlPoints.push_back(p);
+		}
+	}
+
+	{
+		for (int i=0; i!=g_controlPoints.size(); ++i)
+		{
+			float3 p0 = g_controlPoints[i];
+
+			float3 avgN		= float3::k000;
+			float  avgCount	= 0;
+
+			std::set<uint32_t> cellBoundaries;
+			std::vector<float4> clippingPlanes;
+
+			for (int j=0; j!=g_controlPoints.size(); ++j)
+			{
+				if (i==j)
+					continue;
+
+				float3 p1 = g_controlPoints[j];
+
+				if (distance(p0, p1) > g_cellRadius * 2.0f)
+					continue;
+
+				uint64_t edgeHash01 = EdgeHash(i,j);
+
+				if (g_cellBoundaryFromHash.find(edgeHash01) == g_cellBoundaryFromHash.end())
+				{
+					g_cellBoundaryFromHash[edgeHash01] = (uint32_t)g_cellBoundaries.size();
+					g_cellBoundaries.push_back(CellBoundary());
+				}
+
+				uint32_t boundaryIndex01 = g_cellBoundaryFromHash[edgeHash01];
+				cellBoundaries.insert(boundaryIndex01);
+
+				float4 clipPlane = MakePlaneEquation(normalize(p1-p0), avg(p0,p1));
+				clippingPlanes.push_back(clipPlane);
+
+				for (int k=0; k!=g_controlPoints.size(); ++k)
+				{
+					if (i==k || j==k)
+						continue;
+
+					float3 p2 = g_controlPoints[k];
+
+					if (distance(p0, p2) > g_cellRadius * 2.0f)
+						continue;
+
+					if (fabs(dot( normalize(p1-p0), normalize(p2-p0) )) > 0.999f)
+						continue;
+
+					uint64_t edgeHash02 = EdgeHash(i,k);
+
+					if (g_cellBoundaryFromHash.find(edgeHash02) == g_cellBoundaryFromHash.end())
+					{
+						g_cellBoundaryFromHash[edgeHash02] = (uint32_t)g_cellBoundaries.size();
+						g_cellBoundaries.push_back(CellBoundary());
+					}
+
+					uint32_t boundaryIndex02 = g_cellBoundaryFromHash[edgeHash02];
+					cellBoundaries.insert(boundaryIndex02);
+
+					float3 c = CircumCenter(p0, p1, p2);
+
+					g_cellBoundaries[boundaryIndex01].boundaryPoints.push_back(c);
+					g_cellBoundaries[boundaryIndex02].boundaryPoints.push_back(c);
+
+					float3 N = TriangleNormal(p0, p1, p2);
+
+					avgN += N;
+					avgCount += 1;
+				}
+			}
+
+			for (uint32_t index : cellBoundaries)
+			{
+				CellBoundary& cellBoundary = g_cellBoundaries[index];
+
+				// Remove any boundary points outside any of the clipping planes
+				for (auto itr = cellBoundary.boundaryPoints.begin(); itr != cellBoundary.boundaryPoints.end(); )
+				{
+					float4 p = float4( (*itr), 1 );
+				
+					bool removed = false;
+
+					for (const float4& clippingPlane : clippingPlanes)
+					{
+						if (dot(clippingPlane, p) > 0)
+						{
+							itr = cellBoundary.boundaryPoints.erase(itr);
+							removed = true;
+							break;
+						}
+					}
+
+					if (!removed)
+					{
+						++itr;
+					}
+				}
+			}
+
+			if (avgCount>0)
+			{
+				avgN /= avgCount;
+			}
+		}
+	}
+
+	auto endTime_ns = std::chrono::high_resolution_clock::now();
+	std::chrono::nanoseconds duration_ns = endTime_ns - startTime_ns;
+	g_processingTime = duration_ns.count() / 1e9f;
+}
+
 void SavePointCloud(const std::string& filename, const std::vector<float3>& points)
 {
 	std::ofstream outFile(filename);
@@ -767,7 +937,10 @@ void AppRender(uint32_t windowWidth, uint32_t windowHeight)
 			}
 
 			if (g_showCellsPoints)
-				DrawPoints(cellBoundary.points.data(), (uint32_t)cellBoundary.points.size(), matrix44::kIdentity, float4::k1111 * 0.8f);
+			{
+				//DrawPoints(cellBoundary.points.data(), (uint32_t)cellBoundary.points.size(), matrix44::kIdentity, float4::k1111 * 0.8f);
+				DrawPoints(cellBoundary.boundaryPoints.data(), (uint32_t)cellBoundary.boundaryPoints.size(), matrix44::kIdentity, float4::k1111 * 0.8f);
+			}
 
 			if (g_showCellsTubes)
 				DrawLineStrip(cellBoundary.tubePoints.data(), (int)cellBoundary.tubePoints.size(), matrix44::kIdentity, float4(235, 137, 52, 255)/255.0f);
